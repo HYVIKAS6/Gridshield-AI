@@ -12,10 +12,16 @@ from data_preprocessing import (
 )
 from model_training import (
     calibrate_contamination,
+    compare_all_models,
     evaluate_isolation_forest,
     evaluate_mlp_model,
+    evaluate_random_forest,
+    evaluate_xgboost,
+    train_and_evaluate_all_models,
     train_isolation_forest,
     train_mlp_model,
+    train_random_forest,
+    train_xgboost,
 )
 
 
@@ -137,6 +143,31 @@ def test_model_training_and_evaluation_on_unseen_test():
     assert 0.0 <= mlp_results["accuracy"] <= 1.0
     assert len(mlp_results["predictions"]) == len(y_test)
 
+    # Random Forest
+    rf_model = train_random_forest(X_train, y_train, n_estimators=50)
+    rf_results = evaluate_random_forest(rf_model, X_test, y_test)
+    assert expected_keys.issubset(rf_results.keys())
+    assert 0.0 <= rf_results["accuracy"] <= 1.0
+
+    # XGBoost
+    xgb_model = train_xgboost(X_train, y_train, n_estimators=50)
+    xgb_results = evaluate_xgboost(xgb_model, X_test, y_test)
+    assert xgb_results is not None
+    assert expected_keys.issubset(xgb_results.keys())
+    assert 0.0 <= xgb_results["accuracy"] <= 1.0
+
+    # Multi-model comparison helper
+    models_dict = {
+        "Isolation Forest": if_model,
+        "Random Forest": rf_model,
+        "XGBoost": xgb_model,
+        "MLP Neural Network": mlp_model,
+    }
+    comp_df, detailed = compare_all_models(models_dict, X_test, y_test)
+    assert len(comp_df) == 4
+    assert {"Model", "Accuracy", "Precision", "Recall", "F1-score", "ROC-AUC", "False Positive Rate", "TP", "FP", "TN", "FN"}.issubset(comp_df.columns)
+    assert len(detailed) == 4
+
 
 def test_dataframe_validation_error_handling():
     """Verify validation handles corrupted and empty DataFrames gracefully."""
@@ -154,3 +185,108 @@ def test_dataframe_validation_error_handling():
     is_valid, msg, df_out = validate_grid_dataframe(clean_df)
     assert is_valid
     assert len(df_out) == 10
+
+
+def test_telemetry_dropout_and_ramping_fdi():
+    """Verify newly introduced telemetry_dropout and ramping_fdi scenarios."""
+    df_clean = generate_synthetic_grid_data(n_samples=60, attack_prob=0.0, random_seed=42)
+    
+    # 1. Telemetry dropout - all sensors
+    df_drop, drop_idx = inject_dynamic_attack_scenario(
+        df_clean,
+        attack_type="telemetry_dropout",
+        start_idx=10,
+        duration=5,
+        target_sensor="all",
+        dropout_mode="zero",
+    )
+    for idx in drop_idx:
+        assert df_drop.loc[idx, "voltage"] == 0.0
+        assert df_drop.loc[idx, "current"] == 0.0
+        assert df_drop.loc[idx, "load"] == 0.0
+        assert df_drop.loc[idx, "frequency"] == 0.0
+        assert df_drop.loc[idx, "target"] == 1
+        assert df_drop.loc[idx, "attack_type"] == "telemetry_dropout"
+
+    # 2. Telemetry dropout - single sensor flatline
+    df_flat, flat_idx = inject_dynamic_attack_scenario(
+        df_clean,
+        attack_type="telemetry_dropout",
+        start_idx=20,
+        duration=5,
+        target_sensor="voltage",
+        dropout_mode="flatline",
+    )
+    for idx in flat_idx:
+        assert df_flat.loc[idx, "voltage"] == df_clean.loc[19, "voltage"]
+        assert df_flat.loc[idx, "target"] == 1
+        assert df_flat.loc[idx, "attack_type"] == "telemetry_dropout"
+
+    # 3. Ramping FDI
+    df_ramp, ramp_idx = inject_dynamic_attack_scenario(
+        df_clean,
+        attack_type="ramping_fdi",
+        start_idx=30,
+        duration=10,
+        magnitude=15.0,
+        target_sensor="voltage",
+        ramp_shape="linear",
+    )
+    assert len(ramp_idx) == 10
+    assert (df_ramp.loc[ramp_idx, "target"] == 1).all()
+    assert (df_ramp.loc[ramp_idx, "attack_type"] == "ramping_fdi").all()
+    # Linear ramp ends at peak delta
+    assert df_ramp.loc[ramp_idx[-1], "voltage"] == pytest.approx(df_clean.loc[ramp_idx[-1], "voltage"] + 15.0)
+    assert df_ramp.loc[ramp_idx[0], "voltage"] < df_ramp.loc[ramp_idx[-1], "voltage"]
+
+    # 4. Pipeline handles dropouts gracefully without NaN leakage
+    pipe = LeakFreeGridPipeline()
+    X = pipe.fit_transform(df_drop)
+    assert not np.isnan(X).any()
+    assert X.shape == (60, 6)
+
+
+def test_incident_report_generation():
+    """Verify HTML incident report generation with actual application data."""
+    import report_generator
+
+    telemetry_summary = {
+        "total_samples": 1200,
+        "suspicious_readings": 45,
+        "suspicious_pct": 3.75,
+        "mean_voltage": 229.8,
+        "mean_frequency": 50.002,
+        "mean_current": 9.85,
+        "mean_load": 2.26,
+    }
+    attack_history = [
+        {"type": "telemetry_dropout", "target_sensor": "frequency", "magnitude": "zero", "duration": 8, "indices": list(range(8))},
+        {"type": "ramping_fdi", "target_sensor": "voltage", "magnitude": 15.0, "duration": 12, "indices": list(range(12))},
+    ]
+    model_df = pd.DataFrame([
+        {"Model": "Random Forest", "Accuracy": 0.98, "Precision": 0.94, "Recall": 0.91, "F1-score": 0.925, "ROC-AUC": 0.985, "False Positive Rate": 0.01, "TP": 35, "FP": 2, "TN": 180, "FN": 3},
+        {"Model": "XGBoost", "Accuracy": 0.975, "Precision": 0.93, "Recall": 0.89, "F1-score": 0.910, "ROC-AUC": 0.980, "False Positive Rate": 0.015, "TP": 34, "FP": 3, "TN": 179, "FN": 4},
+    ])
+    mitigation_actions = [
+        "Trigger Fast Frequency Response (FFR) to stabilize secondary grid bus.",
+        "Re-authenticate PMU sensors via zero-trust challenge-response.",
+    ]
+
+    html_out = report_generator.generate_incident_report_html(
+        project_name="GridShield AI",
+        telemetry_summary=telemetry_summary,
+        attack_history=attack_history,
+        model_comparison_df=model_df,
+        mitigation_actions=mitigation_actions,
+        active_threat_level="CRITICAL",
+    )
+
+    assert "<!DOCTYPE html>" in html_out
+    assert "GridShield AI" in html_out
+    assert "telemetry_dropout" in html_out
+    assert "ramping_fdi" in html_out
+    assert "Random Forest" in html_out
+    assert "XGBoost" in html_out
+    assert "Fast Frequency Response" in html_out
+    assert "CRITICAL" in html_out
+

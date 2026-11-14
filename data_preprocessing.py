@@ -3,10 +3,56 @@ Data Preprocessing, Synthetic Telemetry Generation, and Leak-Free Feature Engine
 for GridShield AI Smart Grid Cyberattack Simulator.
 """
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+
+
+ATTACK_METADATA: Dict[str, Dict[str, Any]] = {
+    "voltage_spike": {
+        "name": "Voltage Spike / Surge",
+        "description": "Instantaneous voltage spike or transient overvoltage on substation bus.",
+        "affected_sensors": ["voltage"],
+        "default_magnitude": 12.0,
+        "param_description": "Magnitude added to nominal voltage in Volts (e.g. +6V to +18V).",
+    },
+    "frequency_shift": {
+        "name": "Frequency Sag / Shift",
+        "description": "Sudden frequency deviation simulating generator trip or spoofed PMU frequency telemetry.",
+        "affected_sensors": ["frequency"],
+        "default_magnitude": 0.8,
+        "param_description": "Absolute frequency offset in Hz applied in positive or negative direction.",
+    },
+    "load_drift": {
+        "name": "Load Inconsistency / Drift",
+        "description": "Uncoordinated step scaling on active power reading breaking V-I physical relationship.",
+        "affected_sensors": ["load"],
+        "default_magnitude": 1.4,
+        "param_description": "Multiplicative factor applied to active load (kW) (e.g. 1.25x - 1.6x).",
+    },
+    "stealth_fdia": {
+        "name": "Stealth Coordinated FDIA",
+        "description": "Coordinated false data injection across current and load preserving P = V*I/1000 with noise.",
+        "affected_sensors": ["current", "load", "voltage"],
+        "default_magnitude": 1.25,
+        "param_description": "Scaling multiplier for current and load with perturbed voltage.",
+    },
+    "telemetry_dropout": {
+        "name": "Telemetry Dropout / Loss",
+        "description": "Simulates sensor packet loss or communication blackout. Sensor flatlines to 0 or last held value.",
+        "affected_sensors": ["voltage", "current", "load", "frequency", "all"],
+        "default_magnitude": 0.0,
+        "param_description": "Target dropped value (e.g., 0.0 for zero-out or -1.0 for last held reading flatline).",
+    },
+    "ramping_fdi": {
+        "name": "Ramping / Slow-Drift FDI",
+        "description": "Gradual linear or progressive drift from baseline to peak magnitude over attack duration to evade threshold alarms.",
+        "affected_sensors": ["voltage", "frequency", "load", "current"],
+        "default_magnitude": 15.0,
+        "param_description": "Final peak perturbation delta or multiplier reached at the end of the ramping sequence.",
+    },
+}
 
 
 def generate_synthetic_grid_data(
@@ -58,27 +104,95 @@ def inject_attack_at_indices(
     attack_type: Optional[str] = None,
     magnitude: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
+    target_sensor: Optional[str] = None,
+    dropout_mode: str = "zero",
+    ramp_shape: str = "linear",
 ) -> pd.DataFrame:
     """
     Modifies telemetry in df at specific indices to simulate cyberattack scenarios.
     Ensures telemetry is actually manipulated and flagged in target and attack_type.
+    
+    Supported attack types:
+    - 'voltage_spike': Instantaneous surge added to voltage.
+    - 'frequency_shift': Sudden frequency step (sag or swell).
+    - 'load_drift': Multiplicative drift on active power reading.
+    - 'stealth_fdia': Coordinated current and load manipulation preserving P = V*I/1000.
+    - 'telemetry_dropout': Simulates missing sensor readings or communication interruption.
+                          target_sensor: 'voltage', 'current', 'load', 'frequency', or 'all'.
+                          dropout_mode: 'zero' (drops to 0.0) or 'flatline' (holds previous value / constant).
+    - 'ramping_fdi' (or 'slow_drift'): Progressively ramps sensor tampering over the sequence
+                          of indices to evade instantaneous delta checks.
     """
     if rng is None:
         rng = np.random.default_rng()
 
     df = df.copy()
-    valid_attack_types = ["voltage_spike", "frequency_shift", "load_drift", "stealth_fdia"]
+    valid_attack_types = [
+        "voltage_spike",
+        "frequency_shift",
+        "load_drift",
+        "stealth_fdia",
+        "telemetry_dropout",
+        "ramping_fdi",
+        "slow_drift",
+    ]
 
-    for idx in indices:
-        if idx not in df.index:
-            continue
+    # Normalize slow_drift to ramping_fdi
+    canonical_type = None
+    if attack_type is not None:
+        canonical_type = "ramping_fdi" if attack_type == "slow_drift" else attack_type
 
-        selected_type = attack_type if attack_type in valid_attack_types else rng.choice(valid_attack_types)
+    # Filter indices to valid dataframe indices and preserve chronological order for ramping
+    valid_indices = [idx for idx in indices if idx in df.index]
+    if not valid_indices:
+        return df
+
+    # If attack_type is fixed or to be sampled globally
+    fixed_type = canonical_type if canonical_type in valid_attack_types else None
+    
+    num_pts = len(valid_indices)
+
+    # For ramping attacks, compute ramp progression across the sequence of indices
+    if fixed_type == "ramping_fdi":
+        sensor = target_sensor if target_sensor in ["voltage", "frequency", "load", "current"] else "voltage"
+        peak_mag = magnitude if magnitude is not None else (
+            float(rng.uniform(10.0, 25.0)) if sensor == "voltage"
+            else float(rng.uniform(0.5, 1.5)) if sensor == "frequency"
+            else float(rng.uniform(1.3, 1.8))
+        )
+        if num_pts == 1:
+            ramp_factors = np.array([1.0])
+        else:
+            steps = np.linspace(1.0 / num_pts, 1.0, num_pts)
+            if ramp_shape == "progressive":
+                ramp_factors = steps ** 2
+            else:  # linear
+                ramp_factors = steps
+
+        for step_i, idx in enumerate(valid_indices):
+            factor = ramp_factors[step_i]
+            if sensor == "voltage":
+                df.loc[idx, "voltage"] += peak_mag * factor
+            elif sensor == "frequency":
+                df.loc[idx, "frequency"] += peak_mag * factor
+            elif sensor == "current":
+                df.loc[idx, "current"] *= (1.0 + (peak_mag - 1.0) * factor if peak_mag > 1.0 else 1.0 + peak_mag * factor)
+                df.loc[idx, "load"] = (df.loc[idx, "voltage"] * df.loc[idx, "current"]) / 1000.0
+            elif sensor == "load":
+                df.loc[idx, "load"] *= (1.0 + (peak_mag - 1.0) * factor if peak_mag > 1.0 else 1.0 + peak_mag * factor)
+
+            df.loc[idx, "attack_type"] = "ramping_fdi"
+            df.loc[idx, "target"] = 1
+        return df
+
+    for idx in valid_indices:
+        selected_type = fixed_type if fixed_type is not None else rng.choice([
+            "voltage_spike", "frequency_shift", "load_drift", "stealth_fdia", "telemetry_dropout", "ramping_fdi"
+        ])
 
         if selected_type == "voltage_spike":
             delta_v = magnitude if magnitude is not None else float(rng.uniform(6.0, 18.0))
             df.loc[idx, "voltage"] += delta_v
-            # Keep physics consistent or let power show tampering
             df.loc[idx, "attack_type"] = "voltage_spike"
 
         elif selected_type == "frequency_shift":
@@ -93,13 +207,46 @@ def inject_attack_at_indices(
             df.loc[idx, "attack_type"] = "load_drift"
 
         elif selected_type == "stealth_fdia":
-            # Coordinated False Data Injection: manipulates both current and load to simulate
-            # a compromised sensor pair that evades simple algebraic single-variable checks
             scaling = magnitude if magnitude is not None else float(rng.uniform(1.15, 1.35))
             df.loc[idx, "current"] *= scaling
             df.loc[idx, "load"] = (df.loc[idx, "voltage"] * df.loc[idx, "current"]) / 1000.0
             df.loc[idx, "voltage"] += float(rng.normal(0, 0.8))
             df.loc[idx, "attack_type"] = "stealth_fdia"
+
+        elif selected_type == "telemetry_dropout":
+            sensor = target_sensor if target_sensor in ["voltage", "current", "load", "frequency", "all"] else "all"
+            target_cols = ["voltage", "current", "load", "frequency"] if sensor == "all" else [sensor]
+            
+            for col in target_cols:
+                if dropout_mode == "flatline":
+                    # Flatline: use magnitude if specified, or previous valid observation if available
+                    if magnitude is not None and magnitude != 0.0:
+                        df.loc[idx, col] = magnitude
+                    else:
+                        prev_loc = df.index.get_loc(idx) - 1
+                        if prev_loc >= 0:
+                            df.loc[idx, col] = float(df.iloc[prev_loc][col])
+                        else:
+                            df.loc[idx, col] = 0.0
+                else:
+                    # Default 'zero' drop mode
+                    val = magnitude if magnitude is not None else 0.0
+                    df.loc[idx, col] = val
+
+            df.loc[idx, "attack_type"] = "telemetry_dropout"
+
+        elif selected_type in ["ramping_fdi", "slow_drift"]:
+            sensor = target_sensor if target_sensor in ["voltage", "frequency", "load", "current"] else "voltage"
+            drift_val = magnitude if magnitude is not None else 10.0
+            if sensor == "voltage":
+                df.loc[idx, "voltage"] += drift_val
+            elif sensor == "frequency":
+                df.loc[idx, "frequency"] += drift_val
+            elif sensor == "current":
+                df.loc[idx, "current"] *= drift_val
+            elif sensor == "load":
+                df.loc[idx, "load"] *= drift_val
+            df.loc[idx, "attack_type"] = "ramping_fdi"
 
         df.loc[idx, "target"] = 1
 
@@ -113,6 +260,9 @@ def inject_dynamic_attack_scenario(
     duration: int = 15,
     magnitude: Optional[float] = None,
     random_seed: Optional[int] = None,
+    target_sensor: Optional[str] = None,
+    dropout_mode: str = "zero",
+    ramp_shape: str = "linear",
 ) -> Tuple[pd.DataFrame, List[int]]:
     """
     Interactive attack injection for real-time operator simulation.
@@ -138,6 +288,9 @@ def inject_dynamic_attack_scenario(
         attack_type=attack_type,
         magnitude=magnitude,
         rng=rng,
+        target_sensor=target_sensor,
+        dropout_mode=dropout_mode,
+        ramp_shape=ramp_shape,
     )
     return updated_df, indices
 
@@ -187,6 +340,11 @@ class LeakFreeGridPipeline:
         For test sets, context from training boundaries is honored.
         """
         res = df.copy()
+
+        # Handle any residual NaNs or dropouts cleanly before computing features
+        for col in ["voltage", "current", "load", "frequency"]:
+            if col in res.columns:
+                res[col] = pd.to_numeric(res[col], errors="coerce").ffill().bfill().fillna(0.0)
 
         if is_train:
             # Fit context from train tail
