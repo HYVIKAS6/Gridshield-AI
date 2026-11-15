@@ -290,3 +290,112 @@ def test_incident_report_generation():
     assert "Fast Frequency Response" in html_out
     assert "CRITICAL" in html_out
 
+
+def test_cyber_physical_consistency_engine():
+    """Verify physical Ohm/power consistency, RoCoF computation, and grid health index."""
+    from cyber_physical import check_physical_power_consistency, compute_rocof, evaluate_grid_physics, get_cyber_physical_summary
+
+    # Normal physics: V=230, I=10, pf=0.95 -> Expected P ~ 2.185 kW
+    v = np.array([230.0, 230.0])
+    i = np.array([10.0, 10.0])
+    p_consistent = np.array([2.185, 2.185])
+    p_inconsistent = np.array([2.185, 5.000])
+
+    is_viol_ok, res_ok = check_physical_power_consistency(v, i, p_consistent)
+    assert (is_viol_ok == 0).all()
+
+    is_viol_bad, res_bad = check_physical_power_consistency(v, i, p_inconsistent)
+    assert is_viol_bad[0] == 0
+    assert is_viol_bad[1] == 1  # 5.0 kW vs ~2.185 kW is an electrical violation
+
+    # RoCoF calculation: delta of 0.8 Hz in 1 second
+    freqs = np.array([50.0, 50.8])
+    rocof = compute_rocof(freqs, 1.0)
+    assert rocof[1] == pytest.approx(0.8, rel=1e-2)
+
+    # DataFrame evaluation
+    df_sample = generate_synthetic_grid_data(n_samples=50, attack_prob=0.1, random_seed=42)
+    df_audited = evaluate_grid_physics(df_sample)
+    assert "cyber_physical_anomaly_score" in df_audited.columns
+    assert "physics_power_violation" in df_audited.columns
+
+    summary = get_cyber_physical_summary(df_audited)
+    assert "grid_health_index" in summary
+    assert 0.0 <= summary["grid_health_index"] <= 100.0
+
+
+def test_pandapower_smart_grid_simulation():
+    """Verify IEEE power network loading and power-flow execution."""
+    from power_simulation import HAS_PANDAPOWER, load_network_case, run_power_flow_simulation
+
+    if not HAS_PANDAPOWER:
+        pytest.skip("pandapower not installed")
+
+    net = load_network_case("IEEE 14-Bus System")
+    res = run_power_flow_simulation(net, attack_bus_id=3, attack_type="load_fdi", magnitude=1.5)
+    assert res["success"] is True
+    assert res["n_buses"] == 14
+    assert res["attack_applied"] is True
+    assert "bus_df" in res
+    assert "line_df" in res
+
+
+def test_lstm_model_training_and_evaluation():
+    """Verify PyTorch LSTM sequential anomaly detector train and evaluation."""
+    from model_training import HAS_TORCH, train_lstm_model, evaluate_lstm_model
+
+    if not HAS_TORCH:
+        pytest.skip("PyTorch not installed")
+
+    rng = np.random.default_rng(42)
+    X_train = rng.normal(0, 1, size=(60, 6)).astype(np.float32)
+    y_train = np.array([0] * 50 + [1] * 10, dtype=int)
+    X_test = rng.normal(0, 1, size=(20, 6)).astype(np.float32)
+    y_test = np.array([0] * 16 + [1] * 4, dtype=int)
+
+    lstm = train_lstm_model(X_train, y_train, window_size=4, epochs=3, random_state=42)
+    assert lstm is not None
+
+    eval_out = evaluate_lstm_model(lstm, X_test, y_test)
+    assert "accuracy" in eval_out
+    assert "f1" in eval_out
+    assert "roc_auc" in eval_out
+    assert len(eval_out["predictions"]) == 20
+
+
+def test_explainability_and_feature_importances():
+    """Verify feature importances calculation and single prediction attribution."""
+    from sklearn.ensemble import RandomForestClassifier
+    from explainability import compute_feature_importances, explain_single_prediction
+
+    rng = np.random.default_rng(42)
+    X = rng.normal(0, 1, size=(40, 4))
+    y = np.array([0] * 30 + [1] * 10)
+    rf = RandomForestClassifier(n_estimators=10, random_state=42).fit(X, y)
+
+    feat_names = ["voltage", "current", "load", "frequency"]
+    imp_df = compute_feature_importances({"Random Forest": rf}, feat_names)
+    assert len(imp_df) == 4
+    assert "Importance" in imp_df.columns
+    assert np.isclose(imp_df["Importance"].sum(), 1.0, atol=1e-2)
+
+    single_exp = explain_single_prediction(rf, X[0], baseline_background=X, feature_names=feat_names)
+    assert "contributions" in single_exp
+    assert single_exp["top_contributor"] in feat_names
+    assert len(single_exp["contributions"]) == 4
+
+
+def test_offline_sample_dataset_integrity():
+    """Verify offline sample dataset is valid, non-empty, and loadable."""
+    import os
+    sample_file = os.path.join(os.path.dirname(__file__), "data", "sample", "smartgrid_telemetry_sample.csv")
+    assert os.path.exists(sample_file)
+    sample_df = pd.read_csv(sample_file)
+    assert len(sample_df) >= 500
+    is_valid, msg, cleaned = validate_grid_dataframe(sample_df)
+    assert is_valid is True
+    assert "voltage" in cleaned.columns
+    assert "target" in cleaned.columns
+
+
+

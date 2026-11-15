@@ -19,6 +19,19 @@ from sklearn.metrics import (
 )
 from sklearn.neural_network import MLPClassifier
 
+# Optional PyTorch import for temporal deep learning
+try:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+    HAS_TORCH = True
+except ImportError:
+    torch = None
+    nn = None
+    DataLoader = None
+    TensorDataset = None
+    HAS_TORCH = False
+
 logger = logging.getLogger(__name__)
 
 # Optional XGBoost import with graceful fallback
@@ -128,6 +141,176 @@ def evaluate_isolation_forest(
     }
 
 
+# -----------------------------------------------------------------------------
+# PyTorch Temporal LSTM Anomaly Detector
+# -----------------------------------------------------------------------------
+if HAS_TORCH:
+    class PyTorchLSTM(nn.Module):
+        """
+        Deep Recurrent LSTM model for temporal smart-grid telemetry sequences.
+        """
+        def __init__(self, input_dim: int, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.2):
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=dropout if num_layers > 1 else 0.0,
+            )
+            self.fc = nn.Sequential(
+                nn.Linear(hidden_dim, 16),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(16, 1),
+            )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            out, _ = self.lstm(x)
+            last_step = out[:, -1, :]
+            logits = self.fc(last_step)
+            return logits.squeeze(-1)
+
+
+class GridLSTMAnomalyDetector:
+    """
+    Wrapper for PyTorch LSTM to provide standard fit/predict/predict_proba interfaces
+    and leak-free temporal sequence formatting.
+    """
+    def __init__(self, window_size: int = 5, hidden_dim: int = 32, num_layers: int = 2, epochs: int = 15, lr: float = 0.005):
+        self.window_size = window_size
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.epochs = epochs
+        self.lr = lr
+        self.model: Optional[PyTorchLSTM] = None
+        self.input_dim: Optional[int] = None
+
+    def _create_sequences(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Creates sliding time-window sequences with backward padding."""
+        n_samples, n_feats = X.shape
+        padded_X = np.pad(X, ((self.window_size - 1, 0), (0, 0)), mode="edge")
+        seqs = np.zeros((n_samples, self.window_size, n_feats), dtype=np.float32)
+        for i in range(n_samples):
+            seqs[i] = padded_X[i : i + self.window_size]
+        return seqs, y
+
+    def fit(self, X: np.ndarray, y: Union[np.ndarray, list]):
+        if not HAS_TORCH:
+            logger.warning("PyTorch is not available. Skipping LSTM training.")
+            return self
+
+        X_arr = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.float32)
+        self.input_dim = X_arr.shape[1]
+
+        seqs, labels = self._create_sequences(X_arr, y_arr)
+        t_X = torch.tensor(seqs, dtype=torch.float32)
+        t_y = torch.tensor(labels, dtype=torch.float32)
+
+        dataset = TensorDataset(t_X, t_y)
+        loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+        self.model = PyTorchLSTM(
+            input_dim=self.input_dim,
+            hidden_dim=self.hidden_dim,
+            num_layers=self.num_layers,
+        )
+        self.model.train()
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+
+        for _ in range(self.epochs):
+            for batch_x, batch_y in loader:
+                optimizer.zero_grad()
+                logits = self.model(batch_x)
+                loss = criterion(logits, batch_y)
+                loss.backward()
+                optimizer.step()
+
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        if not HAS_TORCH or self.model is None:
+            # Fallback uniform probability
+            p = np.full(len(X), 0.5)
+            return np.column_stack([1.0 - p, p])
+
+        self.model.eval()
+        X_arr = np.asarray(X, dtype=np.float32)
+        seqs, _ = self._create_sequences(X_arr)
+        t_X = torch.tensor(seqs, dtype=torch.float32)
+
+        with torch.no_grad():
+            logits = self.model(t_X)
+            probs = torch.sigmoid(logits).cpu().numpy()
+
+        probs = np.clip(probs, 0.0, 1.0)
+        return np.column_stack([1.0 - probs, probs])
+
+    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+        probs = self.predict_proba(X)[:, 1]
+        return (probs >= threshold).astype(int)
+
+
+def train_lstm_model(
+    X_train: np.ndarray,
+    y_train: Union[np.ndarray, list],
+    window_size: int = 5,
+    epochs: int = 15,
+    random_state: int = 42,
+) -> Optional[GridLSTMAnomalyDetector]:
+    """
+    Trains a temporal PyTorch LSTM neural network for sequential smart grid anomaly detection.
+    """
+    if not HAS_TORCH:
+        return None
+    if random_state is not None:
+        torch.manual_seed(random_state)
+    detector = GridLSTMAnomalyDetector(window_size=window_size, epochs=epochs)
+    detector.fit(X_train, y_train)
+    return detector
+
+
+def evaluate_lstm_model(
+    model: GridLSTMAnomalyDetector,
+    X_test: np.ndarray,
+    y_test: Union[np.ndarray, list],
+) -> Dict[str, Any]:
+    """
+    Evaluates PyTorch LSTM on unseen test data.
+    """
+    y_true = np.array(y_test, dtype=int)
+    prob_matrix = model.predict_proba(X_test)
+    scores = prob_matrix[:, 1]
+    y_pred = (scores >= 0.5).astype(int)
+
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
+
+    try:
+        auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
+    except Exception:
+        auc = 0.5
+
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "roc_auc": float(auc),
+        "false_positive_rate": float(fpr),
+        "confusion_matrix": cm.tolist(),
+        "tp": int(tp),
+        "fp": int(fp),
+        "tn": int(tn),
+        "fn": int(fn),
+        "predictions": y_pred.tolist(),
+        "anomaly_scores": scores.tolist(),
+    }
+
+
 def train_mlp_model(
     X_train: np.ndarray,
     y_train: Union[np.ndarray, list],
@@ -204,6 +387,176 @@ def evaluate_mlp_model(
     }
 
 
+# -----------------------------------------------------------------------------
+# PyTorch Temporal LSTM Anomaly Detector
+# -----------------------------------------------------------------------------
+if HAS_TORCH:
+    class PyTorchLSTM(nn.Module):
+        """
+        Deep Recurrent LSTM model for temporal smart-grid telemetry sequences.
+        """
+        def __init__(self, input_dim: int, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.2):
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=dropout if num_layers > 1 else 0.0,
+            )
+            self.fc = nn.Sequential(
+                nn.Linear(hidden_dim, 16),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(16, 1),
+            )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            out, _ = self.lstm(x)
+            last_step = out[:, -1, :]
+            logits = self.fc(last_step)
+            return logits.squeeze(-1)
+
+
+class GridLSTMAnomalyDetector:
+    """
+    Wrapper for PyTorch LSTM to provide standard fit/predict/predict_proba interfaces
+    and leak-free temporal sequence formatting.
+    """
+    def __init__(self, window_size: int = 5, hidden_dim: int = 32, num_layers: int = 2, epochs: int = 15, lr: float = 0.005):
+        self.window_size = window_size
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.epochs = epochs
+        self.lr = lr
+        self.model: Optional[PyTorchLSTM] = None
+        self.input_dim: Optional[int] = None
+
+    def _create_sequences(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Creates sliding time-window sequences with backward padding."""
+        n_samples, n_feats = X.shape
+        padded_X = np.pad(X, ((self.window_size - 1, 0), (0, 0)), mode="edge")
+        seqs = np.zeros((n_samples, self.window_size, n_feats), dtype=np.float32)
+        for i in range(n_samples):
+            seqs[i] = padded_X[i : i + self.window_size]
+        return seqs, y
+
+    def fit(self, X: np.ndarray, y: Union[np.ndarray, list]):
+        if not HAS_TORCH:
+            logger.warning("PyTorch is not available. Skipping LSTM training.")
+            return self
+
+        X_arr = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.float32)
+        self.input_dim = X_arr.shape[1]
+
+        seqs, labels = self._create_sequences(X_arr, y_arr)
+        t_X = torch.tensor(seqs, dtype=torch.float32)
+        t_y = torch.tensor(labels, dtype=torch.float32)
+
+        dataset = TensorDataset(t_X, t_y)
+        loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+        self.model = PyTorchLSTM(
+            input_dim=self.input_dim,
+            hidden_dim=self.hidden_dim,
+            num_layers=self.num_layers,
+        )
+        self.model.train()
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+
+        for _ in range(self.epochs):
+            for batch_x, batch_y in loader:
+                optimizer.zero_grad()
+                logits = self.model(batch_x)
+                loss = criterion(logits, batch_y)
+                loss.backward()
+                optimizer.step()
+
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        if not HAS_TORCH or self.model is None:
+            # Fallback uniform probability
+            p = np.full(len(X), 0.5)
+            return np.column_stack([1.0 - p, p])
+
+        self.model.eval()
+        X_arr = np.asarray(X, dtype=np.float32)
+        seqs, _ = self._create_sequences(X_arr)
+        t_X = torch.tensor(seqs, dtype=torch.float32)
+
+        with torch.no_grad():
+            logits = self.model(t_X)
+            probs = torch.sigmoid(logits).cpu().numpy()
+
+        probs = np.clip(probs, 0.0, 1.0)
+        return np.column_stack([1.0 - probs, probs])
+
+    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+        probs = self.predict_proba(X)[:, 1]
+        return (probs >= threshold).astype(int)
+
+
+def train_lstm_model(
+    X_train: np.ndarray,
+    y_train: Union[np.ndarray, list],
+    window_size: int = 5,
+    epochs: int = 15,
+    random_state: int = 42,
+) -> Optional[GridLSTMAnomalyDetector]:
+    """
+    Trains a temporal PyTorch LSTM neural network for sequential smart grid anomaly detection.
+    """
+    if not HAS_TORCH:
+        return None
+    if random_state is not None:
+        torch.manual_seed(random_state)
+    detector = GridLSTMAnomalyDetector(window_size=window_size, epochs=epochs)
+    detector.fit(X_train, y_train)
+    return detector
+
+
+def evaluate_lstm_model(
+    model: GridLSTMAnomalyDetector,
+    X_test: np.ndarray,
+    y_test: Union[np.ndarray, list],
+) -> Dict[str, Any]:
+    """
+    Evaluates PyTorch LSTM on unseen test data.
+    """
+    y_true = np.array(y_test, dtype=int)
+    prob_matrix = model.predict_proba(X_test)
+    scores = prob_matrix[:, 1]
+    y_pred = (scores >= 0.5).astype(int)
+
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
+
+    try:
+        auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
+    except Exception:
+        auc = 0.5
+
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "roc_auc": float(auc),
+        "false_positive_rate": float(fpr),
+        "confusion_matrix": cm.tolist(),
+        "tp": int(tp),
+        "fp": int(fp),
+        "tn": int(tn),
+        "fn": int(fn),
+        "predictions": y_pred.tolist(),
+        "anomaly_scores": scores.tolist(),
+    }
+
+
 def train_random_forest(
     X_train: np.ndarray,
     y_train: Union[np.ndarray, list],
@@ -268,6 +621,176 @@ def evaluate_random_forest(
         "precision": float(prec),
         "recall": float(rec),
         "f1": float(f1),
+        "roc_auc": float(auc),
+        "false_positive_rate": float(fpr),
+        "confusion_matrix": cm.tolist(),
+        "tp": int(tp),
+        "fp": int(fp),
+        "tn": int(tn),
+        "fn": int(fn),
+        "predictions": y_pred.tolist(),
+        "anomaly_scores": scores.tolist(),
+    }
+
+
+# -----------------------------------------------------------------------------
+# PyTorch Temporal LSTM Anomaly Detector
+# -----------------------------------------------------------------------------
+if HAS_TORCH:
+    class PyTorchLSTM(nn.Module):
+        """
+        Deep Recurrent LSTM model for temporal smart-grid telemetry sequences.
+        """
+        def __init__(self, input_dim: int, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.2):
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=dropout if num_layers > 1 else 0.0,
+            )
+            self.fc = nn.Sequential(
+                nn.Linear(hidden_dim, 16),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(16, 1),
+            )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            out, _ = self.lstm(x)
+            last_step = out[:, -1, :]
+            logits = self.fc(last_step)
+            return logits.squeeze(-1)
+
+
+class GridLSTMAnomalyDetector:
+    """
+    Wrapper for PyTorch LSTM to provide standard fit/predict/predict_proba interfaces
+    and leak-free temporal sequence formatting.
+    """
+    def __init__(self, window_size: int = 5, hidden_dim: int = 32, num_layers: int = 2, epochs: int = 15, lr: float = 0.005):
+        self.window_size = window_size
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.epochs = epochs
+        self.lr = lr
+        self.model: Optional[PyTorchLSTM] = None
+        self.input_dim: Optional[int] = None
+
+    def _create_sequences(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Creates sliding time-window sequences with backward padding."""
+        n_samples, n_feats = X.shape
+        padded_X = np.pad(X, ((self.window_size - 1, 0), (0, 0)), mode="edge")
+        seqs = np.zeros((n_samples, self.window_size, n_feats), dtype=np.float32)
+        for i in range(n_samples):
+            seqs[i] = padded_X[i : i + self.window_size]
+        return seqs, y
+
+    def fit(self, X: np.ndarray, y: Union[np.ndarray, list]):
+        if not HAS_TORCH:
+            logger.warning("PyTorch is not available. Skipping LSTM training.")
+            return self
+
+        X_arr = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.float32)
+        self.input_dim = X_arr.shape[1]
+
+        seqs, labels = self._create_sequences(X_arr, y_arr)
+        t_X = torch.tensor(seqs, dtype=torch.float32)
+        t_y = torch.tensor(labels, dtype=torch.float32)
+
+        dataset = TensorDataset(t_X, t_y)
+        loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+        self.model = PyTorchLSTM(
+            input_dim=self.input_dim,
+            hidden_dim=self.hidden_dim,
+            num_layers=self.num_layers,
+        )
+        self.model.train()
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+
+        for _ in range(self.epochs):
+            for batch_x, batch_y in loader:
+                optimizer.zero_grad()
+                logits = self.model(batch_x)
+                loss = criterion(logits, batch_y)
+                loss.backward()
+                optimizer.step()
+
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        if not HAS_TORCH or self.model is None:
+            # Fallback uniform probability
+            p = np.full(len(X), 0.5)
+            return np.column_stack([1.0 - p, p])
+
+        self.model.eval()
+        X_arr = np.asarray(X, dtype=np.float32)
+        seqs, _ = self._create_sequences(X_arr)
+        t_X = torch.tensor(seqs, dtype=torch.float32)
+
+        with torch.no_grad():
+            logits = self.model(t_X)
+            probs = torch.sigmoid(logits).cpu().numpy()
+
+        probs = np.clip(probs, 0.0, 1.0)
+        return np.column_stack([1.0 - probs, probs])
+
+    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+        probs = self.predict_proba(X)[:, 1]
+        return (probs >= threshold).astype(int)
+
+
+def train_lstm_model(
+    X_train: np.ndarray,
+    y_train: Union[np.ndarray, list],
+    window_size: int = 5,
+    epochs: int = 15,
+    random_state: int = 42,
+) -> Optional[GridLSTMAnomalyDetector]:
+    """
+    Trains a temporal PyTorch LSTM neural network for sequential smart grid anomaly detection.
+    """
+    if not HAS_TORCH:
+        return None
+    if random_state is not None:
+        torch.manual_seed(random_state)
+    detector = GridLSTMAnomalyDetector(window_size=window_size, epochs=epochs)
+    detector.fit(X_train, y_train)
+    return detector
+
+
+def evaluate_lstm_model(
+    model: GridLSTMAnomalyDetector,
+    X_test: np.ndarray,
+    y_test: Union[np.ndarray, list],
+) -> Dict[str, Any]:
+    """
+    Evaluates PyTorch LSTM on unseen test data.
+    """
+    y_true = np.array(y_test, dtype=int)
+    prob_matrix = model.predict_proba(X_test)
+    scores = prob_matrix[:, 1]
+    y_pred = (scores >= 0.5).astype(int)
+
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
+
+    try:
+        auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
+    except Exception:
+        auc = 0.5
+
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
         "roc_auc": float(auc),
         "false_positive_rate": float(fpr),
         "confusion_matrix": cm.tolist(),
@@ -369,6 +892,176 @@ def evaluate_xgboost(
     }
 
 
+# -----------------------------------------------------------------------------
+# PyTorch Temporal LSTM Anomaly Detector
+# -----------------------------------------------------------------------------
+if HAS_TORCH:
+    class PyTorchLSTM(nn.Module):
+        """
+        Deep Recurrent LSTM model for temporal smart-grid telemetry sequences.
+        """
+        def __init__(self, input_dim: int, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.2):
+            super().__init__()
+            self.lstm = nn.LSTM(
+                input_size=input_dim,
+                hidden_size=hidden_dim,
+                num_layers=num_layers,
+                batch_first=True,
+                dropout=dropout if num_layers > 1 else 0.0,
+            )
+            self.fc = nn.Sequential(
+                nn.Linear(hidden_dim, 16),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(16, 1),
+            )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            out, _ = self.lstm(x)
+            last_step = out[:, -1, :]
+            logits = self.fc(last_step)
+            return logits.squeeze(-1)
+
+
+class GridLSTMAnomalyDetector:
+    """
+    Wrapper for PyTorch LSTM to provide standard fit/predict/predict_proba interfaces
+    and leak-free temporal sequence formatting.
+    """
+    def __init__(self, window_size: int = 5, hidden_dim: int = 32, num_layers: int = 2, epochs: int = 15, lr: float = 0.005):
+        self.window_size = window_size
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.epochs = epochs
+        self.lr = lr
+        self.model: Optional[PyTorchLSTM] = None
+        self.input_dim: Optional[int] = None
+
+    def _create_sequences(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Creates sliding time-window sequences with backward padding."""
+        n_samples, n_feats = X.shape
+        padded_X = np.pad(X, ((self.window_size - 1, 0), (0, 0)), mode="edge")
+        seqs = np.zeros((n_samples, self.window_size, n_feats), dtype=np.float32)
+        for i in range(n_samples):
+            seqs[i] = padded_X[i : i + self.window_size]
+        return seqs, y
+
+    def fit(self, X: np.ndarray, y: Union[np.ndarray, list]):
+        if not HAS_TORCH:
+            logger.warning("PyTorch is not available. Skipping LSTM training.")
+            return self
+
+        X_arr = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.float32)
+        self.input_dim = X_arr.shape[1]
+
+        seqs, labels = self._create_sequences(X_arr, y_arr)
+        t_X = torch.tensor(seqs, dtype=torch.float32)
+        t_y = torch.tensor(labels, dtype=torch.float32)
+
+        dataset = TensorDataset(t_X, t_y)
+        loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+        self.model = PyTorchLSTM(
+            input_dim=self.input_dim,
+            hidden_dim=self.hidden_dim,
+            num_layers=self.num_layers,
+        )
+        self.model.train()
+        criterion = nn.BCEWithLogitsLoss()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
+
+        for _ in range(self.epochs):
+            for batch_x, batch_y in loader:
+                optimizer.zero_grad()
+                logits = self.model(batch_x)
+                loss = criterion(logits, batch_y)
+                loss.backward()
+                optimizer.step()
+
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        if not HAS_TORCH or self.model is None:
+            # Fallback uniform probability
+            p = np.full(len(X), 0.5)
+            return np.column_stack([1.0 - p, p])
+
+        self.model.eval()
+        X_arr = np.asarray(X, dtype=np.float32)
+        seqs, _ = self._create_sequences(X_arr)
+        t_X = torch.tensor(seqs, dtype=torch.float32)
+
+        with torch.no_grad():
+            logits = self.model(t_X)
+            probs = torch.sigmoid(logits).cpu().numpy()
+
+        probs = np.clip(probs, 0.0, 1.0)
+        return np.column_stack([1.0 - probs, probs])
+
+    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+        probs = self.predict_proba(X)[:, 1]
+        return (probs >= threshold).astype(int)
+
+
+def train_lstm_model(
+    X_train: np.ndarray,
+    y_train: Union[np.ndarray, list],
+    window_size: int = 5,
+    epochs: int = 15,
+    random_state: int = 42,
+) -> Optional[GridLSTMAnomalyDetector]:
+    """
+    Trains a temporal PyTorch LSTM neural network for sequential smart grid anomaly detection.
+    """
+    if not HAS_TORCH:
+        return None
+    if random_state is not None:
+        torch.manual_seed(random_state)
+    detector = GridLSTMAnomalyDetector(window_size=window_size, epochs=epochs)
+    detector.fit(X_train, y_train)
+    return detector
+
+
+def evaluate_lstm_model(
+    model: GridLSTMAnomalyDetector,
+    X_test: np.ndarray,
+    y_test: Union[np.ndarray, list],
+) -> Dict[str, Any]:
+    """
+    Evaluates PyTorch LSTM on unseen test data.
+    """
+    y_true = np.array(y_test, dtype=int)
+    prob_matrix = model.predict_proba(X_test)
+    scores = prob_matrix[:, 1]
+    y_pred = (scores >= 0.5).astype(int)
+
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
+
+    try:
+        auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
+    except Exception:
+        auc = 0.5
+
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "roc_auc": float(auc),
+        "false_positive_rate": float(fpr),
+        "confusion_matrix": cm.tolist(),
+        "tp": int(tp),
+        "fp": int(fp),
+        "tn": int(tn),
+        "fn": int(fn),
+        "predictions": y_pred.tolist(),
+        "anomaly_scores": scores.tolist(),
+    }
+
+
 def compare_all_models(
     models_dict: Dict[str, Any],
     X_test: np.ndarray,
@@ -412,8 +1105,10 @@ def compare_all_models(
             eval_res = evaluate_random_forest(model, X_test, y_true)
         elif (HAS_XGBOOST and isinstance(model, XGBClassifier)) or "xgb" in name.lower():
             eval_res = evaluate_xgboost(model, X_test, y_true)
-        elif isinstance(model, MLPClassifier) or "mlp" in name.lower() or "neural" in name.lower():
+        elif isinstance(model, MLPClassifier) or ("mlp" in name.lower() and "lstm" not in name.lower()):
             eval_res = evaluate_mlp_model(model, X_test, y_true)
+        elif (HAS_TORCH and isinstance(model, GridLSTMAnomalyDetector)) or "lstm" in name.lower():
+            eval_res = evaluate_lstm_model(model, X_test, y_true)
         else:
             # Generic fallback: try standard predict and predict_proba
             try:
@@ -518,6 +1213,14 @@ def train_and_evaluate_all_models(
     models["MLP Neural Network"] = train_mlp_model(
         X_train, y_train, random_state=random_state
     )
+
+    # 5. Temporal LSTM Neural Network (PyTorch Sequential Anomaly Detector)
+    if HAS_TORCH:
+        lstm_model = train_lstm_model(
+            X_train, y_train, window_size=5, epochs=15, random_state=random_state
+        )
+        if lstm_model is not None:
+            models["Temporal LSTM (PyTorch)"] = lstm_model
 
     # Evaluate all models
     comparison_df, detailed_results = compare_all_models(models, X_test, y_test)
