@@ -1,0 +1,18 @@
+{
+  "timestamp": "20261115_185430",
+  "models_saved": [
+    "Random Forest"
+  ],
+  "saved_paths": {
+    "Random Forest": "C:\\Users\\koush\\Desktop\\Gridshield-AI-main (1)\\Gridshield-AI-main\\models\\saved\\random_forest_20261115_185430.joblib"
+  },
+  "metrics": {
+    "acc": 0.95
+  },
+  "feature_names": [
+    "V",
+    "I",
+    "P",
+    "f"
+  ]
+}

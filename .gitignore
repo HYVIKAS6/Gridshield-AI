@@ -2,3 +2,14 @@
 /__pycache__
 /backup_pre_upgrade
 .pytest_cache/
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.joblib
+*.pt
+*.pth
+models/saved/
+.pytest_cache/
+.DS_Store
+Thumbs.db

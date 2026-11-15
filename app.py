@@ -3,6 +3,7 @@ GridShield AI - Intelligent Cyberattack Detection and Response Dashboard for Sma
 Professional Industrial Cybersecurity Monitoring & AI Defense Platform.
 """
 
+import os
 from datetime import datetime
 import html
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,16 @@ from model_training import (
     train_isolation_forest,
     train_mlp_model,
 )
+from cyber_physical import evaluate_grid_physics, get_cyber_physical_summary
+from power_simulation import (
+    HAS_PANDAPOWER,
+    get_available_networks,
+    load_network_case,
+    run_power_flow_simulation,
+    generate_bus_timeseries,
+)
+from explainability import compute_feature_importances, explain_single_prediction
+from model_registry import save_model_registry, list_saved_models
 from report_generator import generate_incident_report_html
 
 # -----------------------------------------------------------------------------
@@ -234,13 +245,31 @@ with st.sidebar:
     st.subheader("📁 Telemetry Feed Source")
     data_source = st.selectbox(
         "Source Mode",
-        ["Synthetic Simulation", "Upload Dataset (CSV / Excel)"],
+        ["Synthetic Simulation", "Offline Academic Sample Dataset", "Upload Dataset (CSV / Excel)"],
         index=0,
     )
 
     current_config: Dict[str, Any] = {"data_source": data_source}
 
-    if data_source == "Synthetic Simulation":
+    if data_source == "Offline Academic Sample Dataset":
+        sample_path = os.path.join(os.path.dirname(__file__), "data", "sample", "smartgrid_telemetry_sample.csv")
+        if os.path.exists(sample_path):
+            sample_df = pd.read_csv(sample_path)
+            st.caption(f"Loaded offline sample dataset ({len(sample_df)} records, {len(sample_df.columns)} features).")
+            if (
+                st.session_state.sim_df is None
+                or st.session_state.active_data_source != data_source
+            ):
+                st.session_state.sim_df = sample_df
+                st.session_state.sim_config = {"source": "offline_sample", "rows": len(sample_df)}
+                st.session_state.active_data_source = data_source
+                st.session_state.attack_history = []
+                st.session_state.models_trained = False
+                st.session_state.train_results = {}
+        else:
+            st.error("Sample dataset not found on disk. Revert to Synthetic Simulation.")
+
+    elif data_source == "Synthetic Simulation":
         n_samples = st.slider("Total Telemetry Hours", min_value=300, max_value=5000, value=1200, step=100)
         base_attack_prob = st.slider("Baseline Cyber Threat Frequency (%)", min_value=0, max_value=30, value=5, step=1) / 100.0
         random_seed = st.number_input("Generator Seed", value=42, step=1)
@@ -390,16 +419,19 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# Navigation Tabs (7 Comprehensive Operational Modules)
+# Navigation Tabs (10 Comprehensive Operational Modules)
 # -----------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "⚡ Smart Grid Overview",
-    "📡 Sensor Monitoring",
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+    "⚡ Command Overview",
+    "📡 Telemetry & Sensors",
     "🎯 Attack Simulation Studio",
-    "🧠 ML/DL Model Evaluation",
-    "🚨 Security Alerts",
-    "🛡️ Mitigation Recommendations",
-    "📑 Incident Reports & Export",
+    "🧠 Multi-Model AI Intelligence",
+    "💡 Explainable AI (XAI)",
+    "🔬 Cyber-Physical Integrity",
+    "🌐 IEEE Grid Topology & Power Flow",
+    "🚨 Incident Alerts & SOC",
+    "🛡️ Mitigation Directives",
+    "📑 Forensics & Export Reports",
 ])
 
 # =============================================================================
@@ -859,9 +891,317 @@ with tab4:
                 """, unsafe_allow_html=True)
 
 # =============================================================================
-# TAB 5: Security Alerts
+# TAB 5: Explainable AI (XAI)
 # =============================================================================
 with tab5:
+    st.markdown("### 💡 Explainable AI (XAI) & Feature Contribution Analysis")
+    st.caption("Decodes AI model decisions using global feature importances, SHAP values, and instance-level sensor contribution vectors.")
+
+    if not st.session_state.models_trained:
+        st.info("Train the AI models in the sidebar to activate the Explainable AI engine.")
+    else:
+        results = st.session_state.train_results
+        models_dict = results.get("models", {})
+        feat_names = LeakFreeGridPipeline.FEATURE_COLS
+
+        # 1. Global Feature Importances Across Models
+        st.markdown("#### 🌐 Global Feature Importance Ranking (Tree Ensembles)")
+        imp_df = compute_feature_importances(models_dict, feat_names)
+
+        if not imp_df.empty:
+            fig_imp = px.bar(
+                imp_df,
+                x="Feature",
+                y="Percentage",
+                color="Model",
+                barmode="group",
+                color_discrete_sequence=["#00d2ff", "#00e676", "#ffb300"],
+                labels={"Percentage": "Relative Importance (%)", "Feature": "Telemetry Feature"},
+            )
+            fig_imp.update_layout(
+                paper_bgcolor="#0e1b38",
+                plot_bgcolor="#0a1128",
+                font=dict(color="#f0f4fc"),
+                height=320,
+                margin=dict(l=20, r=20, t=30, b=20),
+                yaxis=dict(gridcolor="#1e3567"),
+                xaxis=dict(gridcolor="#1e3567"),
+            )
+            st.plotly_chart(fig_imp, use_container_width=True)
+
+        # 2. Instance-Level Local Anomaly Explanation
+        st.markdown("#### 🔍 Single-Observation Attribution & Root Cause Analysis")
+        st.caption("Inspect any observation to decode which sensor feature pushed the AI model toward an attack classification.")
+
+        test_df = results["test_df"]
+        sample_idx = st.slider("Select Observation Index from Unseen Test Partition", 0, len(test_df) - 1, 0)
+        selected_model_name = st.selectbox(
+            "Select Explainer Model",
+            [m for m in ["Random Forest", "XGBoost", "Isolation Forest"] if m in models_dict],
+            index=0,
+        )
+
+        pipeline = st.session_state.pipeline
+        if pipeline is not None:
+            X_test_scaled = pipeline.transform(test_df)
+            sample_vector = X_test_scaled[sample_idx]
+            model_obj = models_dict.get(selected_model_name)
+
+            explanation = explain_single_prediction(
+                model=model_obj,
+                sample_vector=sample_vector,
+                baseline_background=pipeline.transform(results["train_df"]),
+                feature_names=feat_names,
+            )
+
+            col_exp1, col_exp2 = st.columns([2, 3])
+            with col_exp1:
+                st.markdown(f"""
+                <div class="cyber-card">
+                    <div class="cyber-card-header">Explanation Summary</div>
+                    <p style="color:#00d2ff; font-weight:600;">Method: {explanation['method']}</p>
+                    <p style="color:#f0f4fc; font-size:0.95rem;">{explanation['summary']}</p>
+                    <div style="font-size:0.85rem; color:#94a3b8;">
+                        Primary Anomaly Driver: <strong style="color:#ff3366;">{explanation['top_contributor']}</strong>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col_exp2:
+                contrib_df = pd.DataFrame([
+                    {"Feature": k, "Contribution Score": v} for k, v in explanation["contributions"].items()
+                ])
+                fig_contrib = px.bar(
+                    contrib_df,
+                    x="Feature",
+                    y="Contribution Score",
+                    color="Contribution Score",
+                    color_continuous_scale="Viridis",
+                    labels={"Contribution Score": "Attribution Impact"},
+                )
+                fig_contrib.update_layout(
+                    paper_bgcolor="#0e1b38",
+                    plot_bgcolor="#0a1128",
+                    font=dict(color="#f0f4fc"),
+                    height=260,
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    yaxis=dict(gridcolor="#1e3567"),
+                    xaxis=dict(gridcolor="#1e3567"),
+                    coloraxis_showscale=False,
+                )
+                st.plotly_chart(fig_contrib, use_container_width=True)
+
+        # 3. Model Registry & Checkpoints
+        st.markdown("#### 💾 Model Registry & Persistent Checkpoints")
+        c_reg1, c_reg2 = st.columns([2, 4])
+        with c_reg1:
+            if st.button("📦 Export Models to Registry", type="primary", use_container_width=True):
+                meta_data = {
+                    "metrics": results.get("comparison_df").to_dict(orient="records"),
+                    "feature_names": feat_names,
+                }
+                saved_paths = save_model_registry(models_dict, meta_data)
+                st.success(f"Exported {len(saved_paths)} model checkpoints to disk!")
+
+        with c_reg2:
+            saved_list = list_saved_models()
+            if saved_list:
+                st.caption(f"Found {len(saved_list)} persistent checkpoints stored in `models/saved/`.")
+            else:
+                st.caption("No saved checkpoints currently on disk. Click the button to serialize active models.")
+
+# =============================================================================
+# TAB 6: Cyber-Physical Integrity Analysis
+# =============================================================================
+with tab6:
+    st.markdown("### 🔬 Cyber-Physical Power Inconsistency & Telemetry Health")
+    st.caption("Deep physical validation verifying Ohm's Law, Active Power conservation ($P = V \\times I \\times \\cos\\theta$), RoCoF rate limits, and sensor dropouts.")
+
+    df_cp = evaluate_grid_physics(df)
+    cp_summary = get_cyber_physical_summary(df_cp)
+
+    col_cp1, col_cp2, col_cp3, col_cp4 = st.columns(4)
+    with col_cp1:
+        gh_color = "#00e676" if cp_summary["grid_health_index"] >= 90 else "#ffb300" if cp_summary["grid_health_index"] >= 75 else "#ff3366"
+        st.markdown(f"""
+        <div class="metric-hero" style="border-left-color: {gh_color};">
+            <div class="metric-hero-label">Physical Grid Health Index</div>
+            <div class="metric-hero-value" style="color: {gh_color};">{cp_summary['grid_health_index']}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_cp2:
+        st.markdown(f"""
+        <div class="metric-hero" style="border-left-color: #ff3366;">
+            <div class="metric-hero-label">P = V*I Law Violations</div>
+            <div class="metric-hero-value" style="color: #ff3366;">{cp_summary['power_inconsistency_count']} <span style="font-size:0.85rem; color:#94a3b8;">events</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_cp3:
+        st.markdown(f"""
+        <div class="metric-hero" style="border-left-color: #ffb300;">
+            <div class="metric-hero-label">Voltage Corridor Breaches</div>
+            <div class="metric-hero-value" style="color: #ffb300;">{cp_summary['voltage_corridor_breaches']} <span style="font-size:0.85rem; color:#94a3b8;">events</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_cp4:
+        st.markdown(f"""
+        <div class="metric-hero" style="border-left-color: #00d2ff;">
+            <div class="metric-hero-label">Max RoCoF (|df/dt|)</div>
+            <div class="metric-hero-value">{cp_summary['max_rocof_hz_s']:.3f} <span style="font-size:0.85rem; color:#94a3b8;">Hz/s</span></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Physical Power Tracking Chart (Measured Load vs Theoretical P = V*I/1000)
+    st.markdown("#### ⚡ Active Power Law Tracking ($P_{measured}$ vs Theoretical $V \\times I \\times 0.95 / 1000$)")
+    fig_power_law = go.Figure()
+    fig_power_law.add_trace(go.Scatter(
+        x=df_cp["timestamp"],
+        y=df_cp["load"],
+        name="Measured Active Load (kW)",
+        line=dict(color="#00d2ff", width=2),
+    ))
+    fig_power_law.add_trace(go.Scatter(
+        x=df_cp["timestamp"],
+        y=df_cp["p_expected_kw"],
+        name="Theoretical Physics Law Power (kW)",
+        line=dict(color="#00e676", width=2, dash="dash"),
+    ))
+
+    # Mark physical violations
+    viol_mask = df_cp["physics_power_violation"] == 1
+    if viol_mask.any():
+        fig_power_law.add_trace(go.Scatter(
+            x=df_cp.loc[viol_mask, "timestamp"],
+            y=df_cp.loc[viol_mask, "load"],
+            mode="markers",
+            name="Physical Inconsistency Violation",
+            marker=dict(color="#ff3366", size=9, symbol="x"),
+        ))
+
+    fig_power_law.update_layout(
+        paper_bgcolor="#0e1b38",
+        plot_bgcolor="#0a1128",
+        font=dict(color="#f0f4fc"),
+        height=320,
+        margin=dict(l=20, r=20, t=30, b=20),
+        yaxis=dict(title="Power (kW)", gridcolor="#1e3567"),
+        xaxis=dict(gridcolor="#1e3567"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig_power_law, use_container_width=True)
+
+    # Rate of Change of Frequency (RoCoF) Dynamics
+    st.markdown("#### ⏱️ Rate of Change of Frequency (RoCoF) Dynamics vs Operational Limit (0.50 Hz/s)")
+    fig_rocof = px.line(
+        df_cp,
+        x="timestamp",
+        y="rocof_hz_s",
+        labels={"rocof_hz_s": "RoCoF (Hz/s)"},
+        color_discrete_sequence=["#ffb300"],
+    )
+    fig_rocof.add_hline(y=0.5, line_dash="dot", line_color="#ff3366", annotation_text="Emergency Trip Threshold (0.50 Hz/s)")
+    fig_rocof.update_layout(
+        paper_bgcolor="#0e1b38",
+        plot_bgcolor="#0a1128",
+        font=dict(color="#f0f4fc"),
+        height=280,
+        margin=dict(l=20, r=20, t=30, b=20),
+        yaxis=dict(gridcolor="#1e3567"),
+        xaxis=dict(gridcolor="#1e3567"),
+    )
+    st.plotly_chart(fig_rocof, use_container_width=True)
+
+# =============================================================================
+# TAB 7: IEEE Grid Topology & Power Flow Simulation
+# =============================================================================
+with tab7:
+    st.markdown("### 🌐 Multi-Bus IEEE Smart Grid Simulation & Power Flow")
+    st.caption("Integrated AC Newton-Raphson load-flow solver modeling bus voltage profiles, line thermal loading, and targeted bus-level attack injection.")
+
+    if not HAS_PANDAPOWER:
+        st.warning("⚠️ pandapower library is not available. Please verify installation.")
+    else:
+        net_col1, net_col2, net_col3 = st.columns(3)
+        with net_col1:
+            selected_net_name = st.selectbox("Select Electrical Network", get_available_networks(), index=0)
+        with net_col2:
+            attack_bus = st.number_input("Target Bus Index for Injection", min_value=0, max_value=13, value=3, step=1)
+        with net_col3:
+            attack_type_bus = st.selectbox("Bus Attack Scenario", ["load_fdi", "voltage_spoofing", "line_trip", "none"], index=0)
+
+        mag_slider = st.slider("Attack Perturbation Multiplier / Magnitude", min_value=0.5, max_value=3.0, value=1.8, step=0.1)
+
+        if st.button("⚡ Execute AC Newton-Raphson Power Flow", type="primary"):
+            net_instance = load_network_case(selected_net_name)
+            pf_res = run_power_flow_simulation(
+                net_instance,
+                attack_bus_id=int(attack_bus),
+                attack_type=attack_type_bus,
+                magnitude=mag_slider,
+            )
+
+            if pf_res["success"]:
+                st.success(f"AC Power Flow Solved Successfully! ({pf_res['attack_description']})")
+                b_c1, b_c2, b_c3 = st.columns(3)
+                b_c1.metric("Buses Monitored", pf_res["n_buses"])
+                b_c2.metric("Transmission Lines", pf_res["n_lines"])
+                b_c3.metric("Overloaded Lines", pf_res["overloaded_lines"], delta_color="inverse")
+
+                # Bus voltage profile bar chart
+                st.markdown("#### 🔋 Bus Voltage Profile (p.u.) across Grid Substation Nodes")
+                bus_df = pf_res["bus_df"]
+                fig_bus_v = px.bar(
+                    bus_df,
+                    x="bus_id",
+                    y="vm_pu",
+                    color="voltage_status",
+                    color_discrete_map={"NORMAL": "#00d2ff", "VIOLATION": "#ff3366"},
+                    labels={"bus_id": "Bus Number", "vm_pu": "Voltage (p.u.)"},
+                )
+                fig_bus_v.add_hline(y=1.05, line_dash="dash", line_color="#ffb300", annotation_text="Upper Corridor (1.05 p.u.)")
+                fig_bus_v.add_hline(y=0.95, line_dash="dash", line_color="#ffb300", annotation_text="Lower Corridor (0.95 p.u.)")
+                fig_bus_v.update_layout(
+                    paper_bgcolor="#0e1b38",
+                    plot_bgcolor="#0a1128",
+                    font=dict(color="#f0f4fc"),
+                    height=300,
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    yaxis=dict(range=[0.85, 1.15], gridcolor="#1e3567"),
+                    xaxis=dict(gridcolor="#1e3567"),
+                )
+                st.plotly_chart(fig_bus_v, use_container_width=True)
+
+                # Line loading percent
+                st.markdown("#### ⚡ Transmission Line Loading (%)")
+                line_df = pf_res["line_df"]
+                fig_line = px.bar(
+                    line_df,
+                    x="line_id",
+                    y="loading_percent",
+                    color="is_overloaded",
+                    color_discrete_map={False: "#00e676", True: "#ff3366"},
+                    labels={"line_id": "Line ID", "loading_percent": "Loading %"},
+                )
+                fig_line.add_hline(y=100.0, line_dash="dot", line_color="#ff3366", annotation_text="100% Thermal Rating")
+                fig_line.update_layout(
+                    paper_bgcolor="#0e1b38",
+                    plot_bgcolor="#0a1128",
+                    font=dict(color="#f0f4fc"),
+                    height=300,
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    yaxis=dict(gridcolor="#1e3567"),
+                    xaxis=dict(gridcolor="#1e3567"),
+                )
+                st.plotly_chart(fig_line, use_container_width=True)
+            else:
+                st.error(f"Power flow calculation failed: {pf_res.get('error')}")
+
+# =============================================================================
+# TAB 8: Security Alerts
+# =============================================================================
+with tab8:
     st.markdown("### 🚨 Real-Time Security Alerts & Anomaly Feed")
     st.caption("Chronological threat assessment inspecting the latest operating intervals in the SCADA pipeline.")
 
@@ -937,9 +1277,9 @@ with tab5:
         )
 
 # =============================================================================
-# TAB 6: Mitigation Recommendations
+# TAB 9: Mitigation Directives
 # =============================================================================
-with tab6:
+with tab9:
     st.markdown("### 🛡️ Prescriptive Cyber-Physical Mitigation Actions")
     st.caption("Automated industrial response protocols triggered dynamically by detected physical sensor deviations.")
 
@@ -1015,9 +1355,9 @@ with tab6:
             """, unsafe_allow_html=True)
 
 # =============================================================================
-# TAB 7: Incident Reports & Export
+# TAB 10: Forensics & Export Reports
 # =============================================================================
-with tab7:
+with tab10:
     st.markdown("### 📑 Cyber Incident & Forensic Audit Report")
     st.caption("Generate, review, and download audit-ready HTML & PDF-printable reports combining live telemetry, attack scenarios, and ML benchmarks.")
 

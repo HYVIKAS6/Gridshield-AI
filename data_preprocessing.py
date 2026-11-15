@@ -432,6 +432,42 @@ def validate_grid_dataframe(df: pd.DataFrame) -> Tuple[bool, str, pd.DataFrame]:
         else:
             return False, "Power System Intrusion dataset missing required PMU columns (R1-PA1:VH, R1-PA4:IH, R1:F).", pd.DataFrame()
 
+    # SmartGrid CyberPhysical Attack Dataset (DOI: 10.21227/symr-bz19) Adapter
+    # Typically contains PMU/Relay columns: V1, I1, Freq, P, Label
+    col_lower_map = {c.lower(): c for c in df_clean.columns}
+    if "voltage" not in df_clean.columns:
+        v_cand = [c for c in df_clean.columns if c.lower() in ["v1", "voltage_v", "volt", "v_mag", "vm_pu", "v_pmu"]]
+        i_cand = [c for c in df_clean.columns if c.lower() in ["i1", "current_a", "curr", "i_mag", "im_pu", "i_pmu"]]
+        f_cand = [c for c in df_clean.columns if c.lower() in ["freq", "frequency_hz", "frequency", "f_hz"]]
+        p_cand = [c for c in df_clean.columns if c.lower() in ["p", "power", "load", "active_power", "load_kw", "p_mw"]]
+
+        if v_cand and i_cand and f_cand:
+            df_clean["voltage"] = pd.to_numeric(df_clean[v_cand[0]], errors="coerce")
+            df_clean["current"] = pd.to_numeric(df_clean[i_cand[0]], errors="coerce")
+            df_clean["frequency"] = pd.to_numeric(df_clean[f_cand[0]], errors="coerce")
+            if p_cand:
+                df_clean["load"] = pd.to_numeric(df_clean[p_cand[0]], errors="coerce")
+            else:
+                df_clean["load"] = (df_clean["voltage"] * df_clean["current"]) / 1000.0
+
+            # Label mapping if present
+            lbl_cand = [c for c in df_clean.columns if c.lower() in ["label", "attack", "class", "is_attack", "status"]]
+            if lbl_cand and "target" not in df_clean.columns:
+                df_clean["target"] = pd.to_numeric(df_clean[lbl_cand[0]], errors="coerce").fillna(0).astype(int)
+
+    # Data4Cyber (Zenodo: 20004612) Adapter
+    # Typically contains OT sensor telemetry and cyber flags
+    if "sensor_v" in col_lower_map and "voltage" not in df_clean.columns:
+        df_clean["voltage"] = pd.to_numeric(df_clean[col_lower_map["sensor_v"]], errors="coerce")
+        if "sensor_i" in col_lower_map:
+            df_clean["current"] = pd.to_numeric(df_clean[col_lower_map["sensor_i"]], errors="coerce")
+        if "sensor_p" in col_lower_map:
+            df_clean["load"] = pd.to_numeric(df_clean[col_lower_map["sensor_p"]], errors="coerce")
+        else:
+            df_clean["load"] = (df_clean["voltage"] * df_clean["current"]) / 1000.0
+        if "sensor_f" in col_lower_map:
+            df_clean["frequency"] = pd.to_numeric(df_clean[col_lower_map["sensor_f"]], errors="coerce")
+
     required_cols = ["voltage", "current", "load", "frequency"]
     missing = [c for c in required_cols if c not in df_clean.columns]
     if missing:
