@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GridShield AI ⚡ - Interactive Command Center & Attack Simulation Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Space Grotesk', sans-serif; background-color: #090a0f; color: #f3f4f6; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        .glow-border { box-shadow: 0 0 25px rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.3); }
+        .card-bg { background: rgba(18, 19, 29, 0.85); backdrop-filter: blur(12px); }
+    </style>
+</head>
+<body class="min-h-screen p-6 md:p-10">
+    <div class="max-w-7xl mx-auto space-y-8">
+        <!-- Header -->
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-6 border-b border-purple-500/20">
+            <div>
+                <div class="flex items-center gap-3">
+                    <span class="p-2.5 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/30 text-2xl">⚡</span>
+                    <div>
+                        <h1 class="text-2xl md:text-3xl font-bold tracking-tight text-white flex items-center gap-2">
+                            GridShield AI <span class="text-xs px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-normal">v2.0 LIVE SIMULATOR</span>
+                        </h1>
+                        <p class="text-xs md:text-sm text-zinc-400">Industrial Cyber-Physical Smart Grid Intrusion Detection & Anomaly Monitoring Platform</p>
+                    </div>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <a href="https://github.com/HYVIKAS6/Gridshield-AI" target="_blank" class="flex items-center gap-2 text-xs md:text-sm px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 transition">
+                    GitHub Repository
+                </a>
+            </div>
+        </header>
+
+        <!-- KPI Grid -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="card-bg p-5 rounded-2xl border border-white/5">
+                <div class="text-xs text-zinc-400 uppercase tracking-wider mb-1">Active Telemetry Bus</div>
+                <div class="text-2xl font-bold text-white mono" id="busStatus">IEEE 14-Bus</div>
+                <div class="text-xs text-emerald-400 mt-1 flex items-center gap-1">● AC Newton-Raphson Solver</div>
+            </div>
+            <div class="card-bg p-5 rounded-2xl border border-white/5">
+                <div class="text-xs text-zinc-400 uppercase tracking-wider mb-1">Grid Frequency</div>
+                <div class="text-2xl font-bold text-cyan-400 mono" id="freqVal">50.02 Hz</div>
+                <div class="text-xs text-zinc-400 mt-1 mono">RoCoF: +0.012 Hz/s</div>
+            </div>
+            <div class="card-bg p-5 rounded-2xl border border-white/5">
+                <div class="text-xs text-zinc-400 uppercase tracking-wider mb-1">Bus Voltage Corridor</div>
+                <div class="text-2xl font-bold text-white mono" id="voltVal">1.024 p.u.</div>
+                <div class="text-xs text-emerald-400 mt-1">Corridor: [0.90 - 1.10] p.u.</div>
+            </div>
+            <div class="card-bg p-5 rounded-2xl border border-white/5">
+                <div class="text-xs text-zinc-400 uppercase tracking-wider mb-1">Threat Defense Level</div>
+                <div class="text-2xl font-bold text-emerald-400 mono" id="threatLevel">NORMAL</div>
+                <div class="text-xs text-zinc-400 mt-1" id="detectedModel">Models: RF, XGBoost, LSTM</div>
+            </div>
+        </div>
+
+        <!-- Simulation Controls & Interactive Visualizer -->
+        <div class="grid lg:grid-cols-3 gap-6">
+            <!-- Attack Injector Simulator -->
+            <div class="card-bg p-6 rounded-2xl border border-white/5 glow-border flex flex-col justify-between">
+                <div>
+                    <h2 class="text-lg font-bold text-purple-300 mb-1 flex items-center gap-2">
+                        <span>🎯</span> Cyber Attack Vector Injector
+                    </h2>
+                    <p class="text-xs text-zinc-400 mb-5">Trigger cyber-physical disturbance and evaluate ensemble AI response in real time.</p>
+
+                    <div class="space-y-3">
+                        <button onclick="injectAttack('normal')" class="w-full text-left px-4 py-3 rounded-xl border border-white/10 hover:border-emerald-500/50 bg-white/[0.02] hover:bg-emerald-500/10 transition text-sm flex items-center justify-between">
+                            <span>🟢 Nominal Safe Operation</span>
+                            <span class="mono text-xs text-emerald-400">Safe</span>
+                        </button>
+                        <button onclick="injectAttack('fdia')" class="w-full text-left px-4 py-3 rounded-xl border border-white/10 hover:border-red-500/50 bg-white/[0.02] hover:bg-red-500/10 transition text-sm flex items-center justify-between">
+                            <span>🔴 False Data Injection (FDIA)</span>
+                            <span class="mono text-xs text-red-400">Attack</span>
+                        </button>
+                        <button onclick="injectAttack('voltage')" class="w-full text-left px-4 py-3 rounded-xl border border-white/10 hover:border-amber-500/50 bg-white/[0.02] hover:bg-amber-500/10 transition text-sm flex items-center justify-between">
+                            <span>⚡ Bus Voltage Surge Attack</span>
+                            <span class="mono text-xs text-amber-400">Surge</span>
+                        </button>
+                        <button onclick="injectAttack('rocof')" class="w-full text-left px-4 py-3 rounded-xl border border-white/10 hover:border-purple-500/50 bg-white/[0.02] hover:bg-purple-500/10 transition text-sm flex items-center justify-between">
+                            <span>🌪️ Rapid Frequency Shift (RoCoF Spike)</span>
+                            <span class="mono text-xs text-purple-400">Anomaly</span>
+                        </button>
+                        <button onclick="injectAttack('dropout')" class="w-full text-left px-4 py-3 rounded-xl border border-white/10 hover:border-blue-500/50 bg-white/[0.02] hover:bg-blue-500/10 transition text-sm flex items-center justify-between">
+                            <span>📡 SCADA Telemetry Dropout</span>
+                            <span class="mono text-xs text-blue-400">Dropout</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mt-6 p-4 rounded-xl bg-black/40 border border-white/5">
+                    <div class="text-xs text-zinc-400 uppercase font-mono mb-2">SOC Forensic Diagnostic</div>
+                    <div id="socConsole" class="text-xs mono text-zinc-300 leading-relaxed">
+                        System initialized. IEEE 14-bus AC power flow nominal. All 5 AI models online.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Chart & AI Telemetry -->
+            <div class="lg:col-span-2 card-bg p-6 rounded-2xl border border-white/5 flex flex-col justify-between">
+                <div>
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                            <span>📊</span> Real-Time Physics Residuals & Sensor Stream
+                        </h2>
+                        <span class="text-xs mono text-zinc-500">Physics check: P = (V * I * cosφ) / 1000</span>
+                    </div>
+                    <div class="h-64">
+                        <canvas id="telemetryChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Verified ML Benchmark Table -->
+                <div class="mt-6 overflow-x-auto">
+                    <div class="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Multi-Model Ensemble Benchmark (Chronological Test Set)</div>
+                    <table class="w-full text-xs text-left text-zinc-300 border-collapse">
+                        <thead>
+                            <tr class="border-b border-white/10 text-zinc-400 mono">
+                                <th class="py-2">Model</th>
+                                <th class="py-2">Type</th>
+                                <th class="py-2">Accuracy</th>
+                                <th class="py-2">Precision</th>
+                                <th class="py-2">F1-Score</th>
+                                <th class="py-2">FPR</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-white/5 mono">
+                            <tr><td class="py-2 text-white font-bold">Random Forest</td><td>Supervised Bagging</td><td class="text-emerald-400">93.3%</td><td>0.800</td><td>0.800</td><td>4.2%</td></tr>
+                            <tr><td class="py-2 text-white font-bold">XGBoost</td><td>Gradient Boosted Trees</td><td class="text-emerald-400">93.3%</td><td>0.800</td><td>0.800</td><td>4.2%</td></tr>
+                            <tr><td class="py-2 text-white font-bold">Isolation Forest</td><td>Unsupervised Tree Outlier</td><td>83.3%</td><td>0.571</td><td>0.667</td><td>12.5%</td></tr>
+                            <tr><td class="py-2 text-white font-bold">PyTorch LSTM</td><td>Deep Recurrent Sequence</td><td>80.0%</td><td>0.500</td><td>0.444</td><td>8.3%</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const ctx = document.getElementById('telemetryChart').getContext('2d');
+        const labels = ['T-9', 'T-8', 'T-7', 'T-6', 'T-5', 'T-4', 'T-3', 'T-2', 'T-1', 'Current'];
+        let voltageData = [1.01, 1.02, 1.01, 1.03, 1.02, 1.01, 1.02, 1.02, 1.01, 1.02];
+        let powerResidualData = [0.04, 0.05, 0.03, 0.04, 0.06, 0.04, 0.03, 0.05, 0.04, 0.04];
+
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Bus Voltage (p.u.)',
+                        data: voltageData,
+                        borderColor: '#a855f7',
+                        backgroundColor: 'rgba(168, 85, 247, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Physics Residual ΔP (kW)',
+                        data: powerResidualData,
+                        borderColor: '#06b6d4',
+                        backgroundColor: 'rgba(6, 182, 212, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#71717a' } },
+                    y: { position: 'left', min: 0.8, max: 1.3, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#a855f7' } },
+                    y1: { position: 'right', min: 0, max: 1.5, grid: { drawOnChartArea: false }, ticks: { color: '#06b6d4' } }
+                },
+                plugins: { legend: { labels: { color: '#d4d4d8' } } }
+            }
+        });
+
+        function injectAttack(type) {
+            const threat = document.getElementById('threatLevel');
+            const soc = document.getElementById('socConsole');
+            const volt = document.getElementById('voltVal');
+            const freq = document.getElementById('freqVal');
+
+            if (type === 'normal') {
+                threat.textContent = 'NORMAL';
+                threat.className = 'text-2xl font-bold text-emerald-400 mono';
+                volt.textContent = '1.021 p.u.';
+                freq.textContent = '50.01 Hz';
+                soc.innerHTML = '<span class="text-emerald-400">[NOMINAL]</span> Telemetry within standard envelope [0.90 - 1.10 p.u.]. All ML models classify benign state.';
+                chart.data.datasets[0].data = [1.01, 1.02, 1.01, 1.02, 1.01, 1.02, 1.02, 1.01, 1.02, 1.02];
+                chart.data.datasets[1].data = [0.03, 0.04, 0.03, 0.05, 0.04, 0.03, 0.04, 0.03, 0.04, 0.04];
+            } else if (type === 'fdia') {
+                threat.textContent = 'CRITICAL ATTACK';
+                threat.className = 'text-2xl font-bold text-red-500 mono';
+                volt.textContent = '1.023 p.u.';
+                freq.textContent = '50.03 Hz';
+                soc.innerHTML = '<span class="text-red-400">[ALERT FDIA-01]</span> Coordinated False Data Injection detected. Random Forest & XGBoost triggered alarm. Physics residual ΔP = 0.84 kW exceeds threshold.';
+                chart.data.datasets[0].data = [1.01, 1.02, 1.02, 1.02, 1.01, 1.03, 1.02, 1.02, 1.03, 1.02];
+                chart.data.datasets[1].data = [0.04, 0.05, 0.04, 0.12, 0.28, 0.45, 0.62, 0.74, 0.81, 0.84];
+            } else if (type === 'voltage') {
+                threat.textContent = 'VOLTAGE SURGE';
+                threat.className = 'text-2xl font-bold text-amber-400 mono';
+                volt.textContent = '1.248 p.u.';
+                freq.textContent = '49.88 Hz';
+                soc.innerHTML = '<span class="text-amber-400">[VOLTAGE VIOLATION]</span> Bus 4 voltage surged to 1.248 p.u. (Statutory limit: 1.10 p.u.). Isolation Forest flags high contamination.';
+                chart.data.datasets[0].data = [1.01, 1.02, 1.02, 1.05, 1.11, 1.16, 1.21, 1.23, 1.24, 1.25];
+                chart.data.datasets[1].data = [0.04, 0.04, 0.08, 0.15, 0.22, 0.31, 0.39, 0.45, 0.50, 0.52];
+            } else if (type === 'rocof') {
+                threat.textContent = 'FREQUENCY ANOMALY';
+                threat.className = 'text-2xl font-bold text-purple-400 mono';
+                volt.textContent = '0.965 p.u.';
+                freq.textContent = '48.91 Hz';
+                soc.innerHTML = '<span class="text-purple-400">[ROCOF TRIP]</span> Rate of Change of Frequency = -0.68 Hz/s (Trip limit > 0.5 Hz/s). LSTM sequential temporal alert dispatched.';
+                chart.data.datasets[0].data = [1.01, 1.00, 0.99, 0.98, 0.97, 0.96, 0.95, 0.96, 0.95, 0.96];
+                chart.data.datasets[1].data = [0.04, 0.08, 0.14, 0.25, 0.38, 0.49, 0.61, 0.70, 0.75, 0.78];
+            } else if (type === 'dropout') {
+                threat.textContent = 'SENSOR DROPOUT';
+                threat.className = 'text-2xl font-bold text-blue-400 mono';
+                volt.textContent = '0.000 p.u.';
+                freq.textContent = '0.00 Hz';
+                soc.innerHTML = '<span class="text-blue-400">[TELEMETRY LOSS]</span> Sudden zero-out sensor freeze detected on PMU feeder. Integrity checker triggered fail-safe mode.';
+                chart.data.datasets[0].data = [1.01, 1.02, 1.01, 1.02, 1.01, 1.00, 0.50, 0.00, 0.00, 0.00];
+                chart.data.datasets[1].data = [0.04, 0.04, 0.05, 0.04, 0.04, 0.05, 0.55, 0.95, 1.00, 1.00];
+            }
+            chart.update();
+        }
+    </script>
+</body>
+</html>
