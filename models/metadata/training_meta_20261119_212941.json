@@ -1,0 +1,65 @@
+{
+  "timestamp": "20261119_212941",
+  "dataset_name": "msu_benchmark",
+  "n_samples": 2200,
+  "test_ratio": 0.25,
+  "models_evaluated": [
+    "Isolation Forest",
+    "Random Forest",
+    "XGBoost",
+    "MLP Neural Network",
+    "PyTorch LSTM"
+  ],
+  "evaluations": {
+    "Isolation Forest": {
+      "accuracy": 0.4381818181818182,
+      "precision": 0.4543010752688172,
+      "recall": 0.6145454545454545,
+      "f1": 0.5224111282843895,
+      "roc_auc": 0.37203305785123963,
+      "false_positive_rate": 0.7381818181818182,
+      "training_time_sec": 0.13493160000007265,
+      "inference_time_sec": 0.008220500000334141
+    },
+    "Random Forest": {
+      "accuracy": 0.5527272727272727,
+      "precision": 0.5466237942122186,
+      "recall": 0.6181818181818182,
+      "f1": 0.5802047781569966,
+      "roc_auc": 0.572998347107438,
+      "false_positive_rate": 0.5127272727272727,
+      "training_time_sec": 0.1446136999998089,
+      "inference_time_sec": 0.027696999999989202
+    },
+    "XGBoost": {
+      "accuracy": 0.5927272727272728,
+      "precision": 0.5825242718446602,
+      "recall": 0.6545454545454545,
+      "f1": 0.6164383561643836,
+      "roc_auc": 0.5762115702479339,
+      "false_positive_rate": 0.4690909090909091,
+      "training_time_sec": 0.12381060000006983,
+      "inference_time_sec": 0.001729900000100315
+    },
+    "MLP Neural Network": {
+      "accuracy": 0.49818181818181817,
+      "precision": 0.49830508474576274,
+      "recall": 0.5345454545454545,
+      "f1": 0.5157894736842106,
+      "roc_auc": 0.5091173553719008,
+      "false_positive_rate": 0.5381818181818182,
+      "training_time_sec": 0.14646680000032575,
+      "inference_time_sec": 0.0004177999999228632
+    },
+    "PyTorch LSTM": {
+      "accuracy": 0.5054545454545455,
+      "precision": 0.5062761506276151,
+      "recall": 0.44,
+      "f1": 0.4708171206225681,
+      "roc_auc": 0.601110743801653,
+      "false_positive_rate": 0.4290909090909091,
+      "training_time_sec": 0.6352634999998372,
+      "inference_time_sec": 0.003393599999981234
+    }
+  }
+}

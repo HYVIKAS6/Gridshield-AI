@@ -1,0 +1,65 @@
+{
+  "timestamp": "20261119_212955",
+  "dataset_name": "synthetic_sample",
+  "n_samples": 1200,
+  "test_ratio": 0.25,
+  "models_evaluated": [
+    "Isolation Forest",
+    "Random Forest",
+    "XGBoost",
+    "MLP Neural Network",
+    "PyTorch LSTM"
+  ],
+  "evaluations": {
+    "Isolation Forest": {
+      "accuracy": 0.91,
+      "precision": 0.7083333333333334,
+      "recall": 0.4594594594594595,
+      "f1": 0.5573770491803278,
+      "roc_auc": 0.8412290617613812,
+      "false_positive_rate": 0.026615969581749048,
+      "training_time_sec": 0.1294474999999693,
+      "inference_time_sec": 0.007318599999962316
+    },
+    "Random Forest": {
+      "accuracy": 0.9666666666666667,
+      "precision": 0.9655172413793104,
+      "recall": 0.7567567567567568,
+      "f1": 0.8484848484848485,
+      "roc_auc": 0.9926009659849964,
+      "false_positive_rate": 0.0038022813688212928,
+      "training_time_sec": 0.14477439999973285,
+      "inference_time_sec": 0.02731729999959498
+    },
+    "XGBoost": {
+      "accuracy": 0.96,
+      "precision": 1.0,
+      "recall": 0.6756756756756757,
+      "f1": 0.8064516129032258,
+      "roc_auc": 0.9873599835577023,
+      "false_positive_rate": 0.0,
+      "training_time_sec": 0.1176037999998698,
+      "inference_time_sec": 0.0016909000000850938
+    },
+    "MLP Neural Network": {
+      "accuracy": 0.8833333333333333,
+      "precision": 1.0,
+      "recall": 0.05405405405405406,
+      "f1": 0.10256410256410256,
+      "roc_auc": 0.6983865995272839,
+      "false_positive_rate": 0.0,
+      "training_time_sec": 0.058189800000036485,
+      "inference_time_sec": 0.00047449999965465395
+    },
+    "PyTorch LSTM": {
+      "accuracy": 0.9266666666666666,
+      "precision": 1.0,
+      "recall": 0.40540540540540543,
+      "f1": 0.5769230769230769,
+      "roc_auc": 0.8695920254855617,
+      "false_positive_rate": 0.0,
+      "training_time_sec": 0.6663502999999764,
+      "inference_time_sec": 0.0022675999998682528
+    }
+  }
+}
