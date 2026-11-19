@@ -1,137 +1,144 @@
-# GridShield AI ⚡
-### Industrial Cyber-Physical Smart Grid Intrusion Detection & Anomaly Monitoring Platform
+# GridShield AI — ML-Based Smart Grid Cyberattack Detection & Simulation System
 
-**GridShield AI** is an advanced cyber-physical simulation, intrusion detection, and power systems defense platform designed for utility operators, cybersecurity researchers, and AI engineers. It combines physics-informed electrical models with deep learning and machine learning algorithms to detect, isolate, and advise mitigations against sophisticated cyber-physical attacks targeting critical infrastructure:
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Framework: Streamlit](https://img.shields.io/badge/Framework-Streamlit-FF4B4B.svg)](https://streamlit.io/)
+[![Deep Learning: PyTorch](https://img.shields.io/badge/Deep%20Learning-PyTorch-EE4C2C.svg)](https://pytorch.org/)
+[![Tests: Pytest Passing](https://img.shields.io/badge/Tests-23%20Passed-brightgreen.svg)]()
 
-- **False Data Injection Attacks (FDIA)** (stealth coordinated and uncoordinated)
-- **Voltage Surges & Sags**
-- **Frequency Deviations & RoCoF Spikes**
-- **Load Inconsistencies & Telemetry Dropouts**
-- **Ramping / Slow-Drift FDI** (stealth parameter tampering evading threshold relays)
-- **Multi-Bus Substation & Line Trip Scenarios** (IEEE 9-Bus & IEEE 14-Bus)
+> **Final Year B.E. Engineering Project**  
+> An academic, technically defensible, and interactive machine learning platform combining electrical power domain physics, empirical smart-grid PMU datasets, multi-algorithm AI benchmarking, and real-time cyber-incident forensics.
 
 ---
 
-## 🚀 Core Capabilities & Architecture
+## ⚡ Key Highlights & Architecture Upgrades
 
+1. **Authentic Empirical Research Dataset:**
+   - Ingests the **Mississippi State University (MSU) & Oak Ridge National Laboratory (ORNL) Power System Attack Dataset** (Phasor Measurement Unit logs: $V_a, I_a, P, f$ under natural events vs. cyberattacks).
+   - Preserves offline synthetic domain telemetry (1,200 records) with 6 reproducible cyberattack vectors.
+2. **Modular Machine Learning & Deep Learning Engine (`ml_models/`):**
+   - **Isolation Forest** (`ml_models/isolation_forest.py`): Unsupervised anomaly detection for zero-day threats.
+   - **Random Forest** (`ml_models/random_forest.py`): Supervised ensemble bagging with Gini feature importances.
+   - **XGBoost Classifier** (`ml_models/xgboost_model.py`): Regularized gradient boosting for tabular telemetry.
+   - **MLP Neural Network** (`ml_models/mlp_model.py`): Multi-layer perceptron feedforward architecture.
+   - **PyTorch LSTM** (`ml_models/lstm_model.py`): 2-layer temporal recurrent neural network evaluating sliding time sequences ($k=5$).
+3. **Leak-Free Chronological Splitting & Forward Pipelines:**
+   - Evaluates strictly on forward holdout intervals ($75\%$ train, $25\%$ test).
+   - Rolling means and scalers fit only on past training context, eliminating lookahead data leakage.
+4. **Interactive ML Training Studio (Tab 4):**
+   - Configurable hyperparameter sliders (trees, learning rates, epochs).
+   - Real-time training progress bar, elapsed training timer, and timestamped operational logs.
+5. **Live ML Prediction Lab (Tab 5):**
+   - Instant single-observation and preset telemetry inferencing.
+   - Live prediction confidence score, execution latency in milliseconds, and physical Ohm's Law consistency verification ($P = V \cdot I / 1000$).
+6. **Dedicated Classroom Jupyter Notebook (`notebooks/GridShield_ML_Training.ipynb`):**
+   - 17 fully documented sections covering EDA, leak-free pipeline, model training, ROC curves, confusion matrices, and model serialization.
+7. **Lecturer Defense & Demonstration Guide (`docs/TEACHER_DEMO_GUIDE.md`):**
+   - Concise 7-minute presentation workflow, architecture diagrams, and comprehensive Q&A preparation.
+
+---
+
+## 📁 Repository Structure
+
+```text
+Gridshield-AI-main/
+├── app.py                     # Streamlit Industrial Command Center (12 Modules)
+├── train.py                   # Standalone CLI training engine (multi-model)
+├── predict.py                 # Standalone CLI prediction engine (presets & custom telemetry)
+├── requirements.txt           # Project dependencies
+├── pytest.ini                 # Pytest configuration
+├── test_pipeline.py           # Core pipeline & pandapower unit tests
+├── test_streamlit_app.py      # Streamlit AppTest integration tests
+├── data_preprocessing.py      # Leak-free forward pipeline & 6 attack vectors
+├── model_training.py          # Unified model training & evaluation adapter
+├── cyber_physical.py          # Physics consistency: P = V*I, voltage corridor, RoCoF
+├── power_simulation.py        # AC Newton-Raphson power flow on IEEE 9 & 14-bus networks
+├── explainability.py          # SHAP & Gini feature importance attribution
+├── report_generator.py        # Printable HTML & forensic cyber incident reports
+├── data/
+│   ├── download_datasets.py   # Automated reproducible dataset acquisition script
+│   ├── DATASET_DOCUMENTATION.md # Academic dataset references & schemas
+│   ├── raw/                   # Raw empirical PMU logs (MSU/ORNL data1.csv)
+│   ├── processed/             # Balanced benchmark datasets (msu_pmu_benchmark.csv)
+│   └── sample/                # Offline synthetic telemetry (smartgrid_telemetry_sample.csv)
+├── ml_models/                 # Dedicated modular model classes
+│   ├── base_model.py          # Abstract base class & standardized evaluation protocol
+│   ├── random_forest.py       # Scikit-learn Random Forest bagging classifier
+│   ├── xgboost_model.py       # XGBoost gradient boosted decision tree classifier
+│   ├── isolation_forest.py    # Unsupervised Isolation Forest anomaly detector
+│   ├── mlp_model.py           # Deep Multi-Layer Perceptron neural network
+│   └── lstm_model.py          # PyTorch Long Short-Term Memory recurrent network
+├── models/
+│   ├── saved/                 # Serialized model checkpoints (.joblib and .pt)
+│   └── metadata/              # Training run metadata and evaluation metrics
+├── notebooks/
+│   └── GridShield_ML_Training.ipynb # Step-by-step academic training notebook
+├── tests/
+│   └── test_ml_suite.py       # Comprehensive modular ML and dataset test suite
+└── docs/
+    └── TEACHER_DEMO_GUIDE.md  # 7-Minute presentation script & viva voce Q&A
 ```
-                                      +------------------------------------+
-                                      |   SCADA / PMU Telemetry Sources    |
-                                      | (Synthetic, IEEE Bus, Research CSV)|
-                                      +-----------------+------------------+
-                                                        |
-                                                        v
-                                      +------------------------------------+
-                                      | Data Engineering & Schema Pipeline |
-                                      |  (Leak-Free Scaling, Adapters)     |
-                                      +--------+------------------+--------+
-                                               |                  |
-                       +-----------------------+                  +-----------------------+
-                       v                                                                  v
-+---------------------------------------------+                    +---------------------------------------------+
-|        Cyber-Physical Diagnostic Engine     |                    |       Multi-Model AI/DL Anomaly Engine      |
-|  - Active Power Law (P = V * I * pf / 1000) |                    |  - Isolation Forest (Unsupervised)          |
-|  - Voltage Stability Corridors (0.90 - 1.10)|                    |  - Random Forest Classifier                 |
-|  - Frequency Corridors & RoCoF (|df/dt|)    |                    |  - XGBoost Gradient Boosted Trees           |
-|  - Sensor Flatline & Telemetry Loss Checks  |                    |  - Deep MLP Neural Network                  |
-+----------------------+----------------------+                    |  - Temporal PyTorch LSTM Sequence Model     |
-                       |                                           +----------------------+----------------------+
-                       |                                                                  |
-                       +-----------------------+                  +-----------------------+
-                                               |                  |
-                                               v                  v
-                                      +------------------------------------+
-                                      |   IEEE Grid Power Flow Simulation  |
-                                      | (Pandapower AC Newton-Raphson NR)  |
-                                      +-----------------+------------------+
-                                                        |
-                                                        v
-                                      +------------------------------------+
-                                      | Industrial Streamlit Command Center|
-                                      |  - 9 Structured Monitoring Modules |
-                                      |  - Real-Time Security Alerts & SOC |
-                                      |  - Forensic Audit Report Generator |
-                                      +------------------------------------+
-```
-
-### 1. Multi-Model AI & Deep Learning Intelligence
-- **Isolation Forest:** Unsupervised outlier detection with dynamic contamination calibration.
-- **Random Forest:** Non-linear decision trees capturing sensor interactions.
-- **XGBoost:** Gradient boosted decision trees for robust boundary classification.
-- **MLP Classifier:** Multi-layer feedforward network with adaptive learning rate and early stopping.
-- **PyTorch LSTM Neural Network:** Sequential temporal deep learning model tracking sliding time windows without data leakage.
-
-### 2. Physics-Informed Cyber-Physical Validation
-- **Power Conservation:** Validates single-phase & three-phase active power $P = \frac{V \cdot I \cdot \cos\phi}{1000}$ with residual tracking.
-- **Voltage Stability:** Statutory operating envelopes ($[0.90 - 1.10]\text{ p.u.}$).
-- **Rate of Change of Frequency (RoCoF):** Instantaneous $|df/dt|$ tracking with trip alarms above $0.50\text{ Hz/s}$.
-- **Telemetry Integrity:** Detects frozen sensors, packet drops, and zero-out outages.
-
-### 3. Multi-Bus Smart Grid Simulation (Pandapower)
-- Supports standard **IEEE 14-Bus**, **IEEE 9-Bus**, and **CIGRE Medium Voltage** networks.
-- Full **AC Newton-Raphson power-flow solver** calculating bus voltage magnitudes ($V_m\text{ p.u.}$) and transmission line thermal loading percentages.
-- Simulates targeted bus attacks including **Load FDI**, **Voltage Setpoint Tampering**, and **Feeder Line Outages**.
-
-### 4. Authentic Research Dataset Adapters
-- Ingestion adapters for:
-  - **SmartGrid CyberPhysical Attack Dataset** (DOI: 10.21227/symr-bz19)
-  - **Data4Cyber Dataset** (Zenodo: 20004612)
-  - **Power System Intrusion Dataset** (PMU / Relay telemetry)
-- Automatic column schema detection, duplicate elimination, and data quality reporting.
 
 ---
 
-## 📊 AI Benchmark Performance (Verified Chronological Test Set)
+## 🚀 Quick Start Guide
 
-| Model Name | Type | Accuracy | Precision | Recall | F1-Score | ROC-AUC | False Positive Rate |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Random Forest** | Supervised Bagging | **93.3%** | **0.800** | **0.800** | **0.800** | **0.955** | **4.2%** |
-| **XGBoost** | Gradient Boosted Trees | **93.3%** | **0.800** | **0.800** | **0.800** | **0.882** | **4.2%** |
-| **Isolation Forest** | Unsupervised Trees | **83.3%** | **0.571** | **0.800** | **0.667** | **0.806** | **12.5%** |
-| **PyTorch LSTM** | Deep Sequential Recurrent | **80.0%** | **0.500** | **0.400** | **0.444** | **0.597** | **8.3%** |
-| **MLP Neural Net** | Deep Feedforward | **83.3%** | **0.333** | **0.250** | **0.286** | **0.542** | **12.5%** |
-
-*Note: All models are evaluated on the exact same unseen chronological test partition with zero lookahead feature leakage.*
-
----
-
-## 🛠️ Installation & Execution
-
-### 1. Requirements
-Ensure Python 3.10+ is installed. Install all project dependencies:
-
+### 1. Installation
+Clone the repository and install the dependencies:
 ```bash
+git clone <repository-url>
+cd Gridshield-AI-main
 pip install -r requirements.txt
 ```
 
-### 2. Running Automated Tests
-Execute the standalone test suite verifying data pipelines, physical consistency equations, pandapower AC simulation, and AI model evaluation:
-
+### 2. Standalone Model Training
+Train all 5 architectures on the authentic MSU research dataset or synthetic benchmark:
 ```bash
-python -m pytest test_pipeline.py
+# Train on MSU / ORNL Research Dataset
+python train.py --dataset msu_benchmark --epochs 5
+
+# Or train on Synthetic Simulation Benchmark
+python train.py --dataset synthetic_sample --epochs 10
 ```
-*(Or run via python directly: `python -c "import test_pipeline; [getattr(test_pipeline, f)() for f in dir(test_pipeline) if f.startswith('test_')]"`)*
 
-### 3. Launching the Command Center
-Start the interactive Streamlit command dashboard:
-
+### 3. Live Prediction CLI
+Run live inference using presets or custom telemetry inputs:
 ```bash
-streamlit run app.py
+# Evaluate an overvoltage attack
+python predict.py --model random_forest --preset voltage_spike
+
+# Evaluate nominal normal operation
+python predict.py --model random_forest --preset normal
+
+# Evaluate custom sensor inputs
+python predict.py --model random_forest --voltage 230.1 --current 10.0 --load 2.301 --frequency 50.0
+```
+
+### 4. Launching the Interactive Dashboard
+Launch the Streamlit Industrial SOC Command Center:
+```bash
+python -m streamlit run app.py
+```
+Open `http://localhost:8501` in your web browser.
+
+### 5. Running Automated Tests
+Execute the comprehensive automated test suite (23 passing tests):
+```bash
+pytest
 ```
 
 ---
 
-## 📂 Project Structure
+## 🎓 Academic Demonstration Sequence for Lecturers
 
-```text
-.
-├── app.py                  # 9-module Streamlit Cyber Command Center dashboard
-├── cyber_physical.py       # Physics checks: P = V*I, voltage corridors, RoCoF, sensor health
-├── power_simulation.py     # Pandapower AC power flow & IEEE 9/14 multi-bus simulation
-├── data_preprocessing.py   # Research adapters, 6 attack vectors, leak-free forward pipelines
-├── model_training.py       # Multi-model AI/DL training (IF, RF, XGB, MLP, PyTorch LSTM)
-├── report_generator.py     # HTML & PDF-printable cyber incident forensic report engine
-├── test_pipeline.py        # Complete automated test suite covering all modules (12 tests)
-├── requirements.txt        # Pinned dependency requirements
-└── README.md               # Architecture documentation & execution guide
-```
+1. **Step 1: Dataset Inspection** — Open `data/processed/msu_pmu_benchmark.csv` and show real PMU synchrophasor columns (`voltage`, `current`, `frequency`, `target`).
+2. **Step 2: CLI Training** — Execute `python train.py --dataset msu_benchmark --epochs 5` to show live leak-free evaluation.
+3. **Step 3: Interactive Dashboard** — Launch `app.py` and open **Tab 4 (ML Training Studio)**. Train individual models and observe real-time progress.
+4. **Step 4: Live Prediction Lab** — Switch to **Tab 5 (Live ML Prediction Lab)**. Test normal vs. attack presets live.
+5. **Step 5: Physics & Forensics** — Review physical power consistency ($P = V \cdot I$) in **Tab 8** and export the audit HTML report in **Tab 12**.
+
+---
+
+## 📜 Citation & Credits
+- **MSU / ORNL Dataset:** Tommy Morris, Uttam Adhikari, Shengyi Pan (Mississippi State University & Oak Ridge National Laboratory).
+- **Power Simulation:** Pandapower AC Newton-Raphson load-flow engine (Fraunhofer IEE / University of Kassel).

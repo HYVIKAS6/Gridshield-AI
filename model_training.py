@@ -1,10 +1,12 @@
 """
 Machine Learning Training, Model Calibration, and Comprehensive Evaluation Engine
 for GridShield AI Smart Grid Cyberattack Simulator.
+Refactored to eliminate redundant code and delegate to dedicated ml_models modules.
 """
 
 import logging
-from typing import Any, Dict, Optional, Tuple, Union
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
@@ -19,37 +21,23 @@ from sklearn.metrics import (
 )
 from sklearn.neural_network import MLPClassifier
 
-# Optional PyTorch import for temporal deep learning
-try:
-    import torch
-    import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
-    HAS_TORCH = True
-except ImportError:
-    torch = None
-    nn = None
-    DataLoader = None
-    TensorDataset = None
-    HAS_TORCH = False
+from ml_models.random_forest import GridRandomForestModel
+from ml_models.xgboost_model import GridXGBoostModel, HAS_XGBOOST
+if HAS_XGBOOST:
+    from xgboost import XGBClassifier
+else:
+    XGBClassifier = None
+from ml_models.isolation_forest import GridIsolationForestModel
+from ml_models.mlp_model import GridMLPModel
+from ml_models.lstm_model import GridLSTMModel, HAS_TORCH, PyTorchLSTMModule
 
 logger = logging.getLogger(__name__)
-
-# Optional XGBoost import with graceful fallback
-try:
-    import xgboost as xgb
-    from xgboost import XGBClassifier
-    HAS_XGBOOST = True
-except ImportError:
-    xgb = None
-    XGBClassifier = None
-    HAS_XGBOOST = False
-    logger.warning("XGBoost library is not installed or failed to import.")
 
 
 def calibrate_contamination(y_train: Optional[Union[np.ndarray, list]], default: float = 0.05) -> float:
     """
     Calibrates contamination hyperparameter for Isolation Forest.
-    Guarantees a valid float strictly within (0.001, 0.5) to satisfy scikit-learn requirements.
+    Guarantees a valid float strictly within (0.001, 0.45) to satisfy scikit-learn requirements.
     """
     if y_train is None or len(y_train) == 0:
         return default
@@ -58,9 +46,8 @@ def calibrate_contamination(y_train: Optional[Union[np.ndarray, list]], default:
     positive_count = np.sum(y_arr == 1)
     ratio = float(positive_count) / float(len(y_arr))
 
-    # Bound contamination cleanly to prevent sklearn errors
     if ratio <= 0.001:
-        return 0.01  # small expected baseline anomaly rate
+        return 0.01
     return min(max(ratio, 0.01), 0.45)
 
 
@@ -72,19 +59,12 @@ def train_isolation_forest(
     """
     Trains an Isolation Forest model for unsupervised anomaly detection.
     """
-    if isinstance(contamination, (int, float)):
-        bounded_contam = min(max(float(contamination), 0.005), 0.49)
-    else:
-        bounded_contam = "auto"
-
-    model = IsolationForest(
-        contamination=bounded_contam,
+    model_wrapper = GridIsolationForestModel(
+        contamination=contamination,
         random_state=random_state,
-        n_estimators=100,
-        n_jobs=-1,
     )
-    model.fit(X_train)
-    return model
+    model_wrapper.fit(X_train)
+    return model_wrapper.model
 
 
 def evaluate_isolation_forest(
@@ -97,160 +77,15 @@ def evaluate_isolation_forest(
     Computes Accuracy, Precision, Recall, F1, ROC-AUC (via decision scores),
     False Positive Rate, and Confusion Matrix.
     """
-    y_true = np.array(y_test, dtype=int)
-    # Predict raw labels: 1 is inlier (normal), -1 is outlier (attack)
-    raw_preds = model.predict(X_test)
-    y_pred = np.where(raw_preds == -1, 1, 0)
-
-    # Anomaly scores: lower decision_function means more abnormal (negated for higher = more anomalous)
-    scores = -model.decision_function(X_test)
-
-    # Confusion matrix
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
-
-    # ROC-AUC (requires at least one positive and one negative sample)
-    try:
-        if len(np.unique(y_true)) > 1:
-            auc = float(roc_auc_score(y_true, scores))
-        else:
-            auc = 0.5
-    except Exception:
-        auc = 0.5
-
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    acc = accuracy_score(y_true, y_pred)
-
-    return {
-        "accuracy": float(acc),
-        "precision": float(prec),
-        "recall": float(rec),
-        "f1": float(f1),
-        "roc_auc": float(auc),
-        "false_positive_rate": float(fpr),
-        "confusion_matrix": cm.tolist(),
-        "tp": int(tp),
-        "fp": int(fp),
-        "tn": int(tn),
-        "fn": int(fn),
-        "predictions": y_pred.tolist(),
-        "anomaly_scores": scores.tolist(),
-    }
+    wrapper = GridIsolationForestModel()
+    wrapper.model = model
+    wrapper.is_fitted = True
+    return wrapper.evaluate(X_test, y_test)
 
 
-# -----------------------------------------------------------------------------
-# PyTorch Temporal LSTM Anomaly Detector
-# -----------------------------------------------------------------------------
-if HAS_TORCH:
-    class PyTorchLSTM(nn.Module):
-        """
-        Deep Recurrent LSTM model for temporal smart-grid telemetry sequences.
-        """
-        def __init__(self, input_dim: int, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.2):
-            super().__init__()
-            self.lstm = nn.LSTM(
-                input_size=input_dim,
-                hidden_size=hidden_dim,
-                num_layers=num_layers,
-                batch_first=True,
-                dropout=dropout if num_layers > 1 else 0.0,
-            )
-            self.fc = nn.Sequential(
-                nn.Linear(hidden_dim, 16),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(16, 1),
-            )
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            out, _ = self.lstm(x)
-            last_step = out[:, -1, :]
-            logits = self.fc(last_step)
-            return logits.squeeze(-1)
-
-
-class GridLSTMAnomalyDetector:
-    """
-    Wrapper for PyTorch LSTM to provide standard fit/predict/predict_proba interfaces
-    and leak-free temporal sequence formatting.
-    """
-    def __init__(self, window_size: int = 5, hidden_dim: int = 32, num_layers: int = 2, epochs: int = 15, lr: float = 0.005):
-        self.window_size = window_size
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.epochs = epochs
-        self.lr = lr
-        self.model: Optional[PyTorchLSTM] = None
-        self.input_dim: Optional[int] = None
-
-    def _create_sequences(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-        """Creates sliding time-window sequences with backward padding."""
-        n_samples, n_feats = X.shape
-        padded_X = np.pad(X, ((self.window_size - 1, 0), (0, 0)), mode="edge")
-        seqs = np.zeros((n_samples, self.window_size, n_feats), dtype=np.float32)
-        for i in range(n_samples):
-            seqs[i] = padded_X[i : i + self.window_size]
-        return seqs, y
-
-    def fit(self, X: np.ndarray, y: Union[np.ndarray, list]):
-        if not HAS_TORCH:
-            logger.warning("PyTorch is not available. Skipping LSTM training.")
-            return self
-
-        X_arr = np.asarray(X, dtype=np.float32)
-        y_arr = np.asarray(y, dtype=np.float32)
-        self.input_dim = X_arr.shape[1]
-
-        seqs, labels = self._create_sequences(X_arr, y_arr)
-        t_X = torch.tensor(seqs, dtype=torch.float32)
-        t_y = torch.tensor(labels, dtype=torch.float32)
-
-        dataset = TensorDataset(t_X, t_y)
-        loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-        self.model = PyTorchLSTM(
-            input_dim=self.input_dim,
-            hidden_dim=self.hidden_dim,
-            num_layers=self.num_layers,
-        )
-        self.model.train()
-        criterion = nn.BCEWithLogitsLoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-
-        for _ in range(self.epochs):
-            for batch_x, batch_y in loader:
-                optimizer.zero_grad()
-                logits = self.model(batch_x)
-                loss = criterion(logits, batch_y)
-                loss.backward()
-                optimizer.step()
-
-        return self
-
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        if not HAS_TORCH or self.model is None:
-            # Fallback uniform probability
-            p = np.full(len(X), 0.5)
-            return np.column_stack([1.0 - p, p])
-
-        self.model.eval()
-        X_arr = np.asarray(X, dtype=np.float32)
-        seqs, _ = self._create_sequences(X_arr)
-        t_X = torch.tensor(seqs, dtype=torch.float32)
-
-        with torch.no_grad():
-            logits = self.model(t_X)
-            probs = torch.sigmoid(logits).cpu().numpy()
-
-        probs = np.clip(probs, 0.0, 1.0)
-        return np.column_stack([1.0 - probs, probs])
-
-    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
-        probs = self.predict_proba(X)[:, 1]
-        return (probs >= threshold).astype(int)
+# Compatibility aliases for PyTorch LSTM
+GridLSTMAnomalyDetector = GridLSTMModel
+PyTorchLSTM = PyTorchLSTMModule
 
 
 def train_lstm_model(
@@ -259,302 +94,27 @@ def train_lstm_model(
     window_size: int = 5,
     epochs: int = 15,
     random_state: int = 42,
-) -> Optional[GridLSTMAnomalyDetector]:
+    progress_callback: Optional[Callable[[int, int, float], None]] = None,
+) -> Optional[GridLSTMModel]:
     """
     Trains a temporal PyTorch LSTM neural network for sequential smart grid anomaly detection.
     """
     if not HAS_TORCH:
         return None
-    if random_state is not None:
-        torch.manual_seed(random_state)
-    detector = GridLSTMAnomalyDetector(window_size=window_size, epochs=epochs)
-    detector.fit(X_train, y_train)
+    detector = GridLSTMModel(window_size=window_size, epochs=epochs, random_state=random_state)
+    detector.fit(X_train, y_train, progress_callback=progress_callback)
     return detector
 
 
 def evaluate_lstm_model(
-    model: GridLSTMAnomalyDetector,
+    model: GridLSTMModel,
     X_test: np.ndarray,
     y_test: Union[np.ndarray, list],
 ) -> Dict[str, Any]:
     """
     Evaluates PyTorch LSTM on unseen test data.
     """
-    y_true = np.array(y_test, dtype=int)
-    prob_matrix = model.predict_proba(X_test)
-    scores = prob_matrix[:, 1]
-    y_pred = (scores >= 0.5).astype(int)
-
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
-
-    try:
-        auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
-    except Exception:
-        auc = 0.5
-
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "roc_auc": float(auc),
-        "false_positive_rate": float(fpr),
-        "confusion_matrix": cm.tolist(),
-        "tp": int(tp),
-        "fp": int(fp),
-        "tn": int(tn),
-        "fn": int(fn),
-        "predictions": y_pred.tolist(),
-        "anomaly_scores": scores.tolist(),
-    }
-
-
-def train_mlp_model(
-    X_train: np.ndarray,
-    y_train: Union[np.ndarray, list],
-    random_state: int = 42,
-    hidden_layer_sizes: Tuple[int, ...] = (64, 32),
-) -> MLPClassifier:
-    """
-    Trains a Multi-layer Perceptron (MLP) Classifier as a robust supervised baseline.
-    """
-    y_arr = np.array(y_train, dtype=int)
-    model = MLPClassifier(
-        hidden_layer_sizes=hidden_layer_sizes,
-        max_iter=300,
-        random_state=random_state,
-        early_stopping=True,
-        n_iter_no_change=10,
-    )
-    model.fit(X_train, y_arr)
-    return model
-
-
-def evaluate_mlp_model(
-    model: MLPClassifier,
-    X_test: np.ndarray,
-    y_test: Union[np.ndarray, list],
-) -> Dict[str, Any]:
-    """
-    Evaluates MLP Classifier on unseen test data.
-    """
-    y_true = np.array(y_test, dtype=int)
-    y_pred = model.predict(X_test)
-
-    # Probabilities for class 1 (attack)
-    if hasattr(model, "predict_proba"):
-        prob_matrix = model.predict_proba(X_test)
-        if prob_matrix.shape[1] > 1:
-            scores = prob_matrix[:, 1]
-        else:
-            scores = prob_matrix[:, 0]
-    else:
-        scores = y_pred.astype(float)
-
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
-
-    try:
-        if len(np.unique(y_true)) > 1:
-            auc = float(roc_auc_score(y_true, scores))
-        else:
-            auc = 0.5
-    except Exception:
-        auc = 0.5
-
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    acc = accuracy_score(y_true, y_pred)
-
-    return {
-        "accuracy": float(acc),
-        "precision": float(prec),
-        "recall": float(rec),
-        "f1": float(f1),
-        "roc_auc": float(auc),
-        "false_positive_rate": float(fpr),
-        "confusion_matrix": cm.tolist(),
-        "tp": int(tp),
-        "fp": int(fp),
-        "tn": int(tn),
-        "fn": int(fn),
-        "predictions": y_pred.tolist(),
-        "anomaly_scores": scores.tolist(),
-    }
-
-
-# -----------------------------------------------------------------------------
-# PyTorch Temporal LSTM Anomaly Detector
-# -----------------------------------------------------------------------------
-if HAS_TORCH:
-    class PyTorchLSTM(nn.Module):
-        """
-        Deep Recurrent LSTM model for temporal smart-grid telemetry sequences.
-        """
-        def __init__(self, input_dim: int, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.2):
-            super().__init__()
-            self.lstm = nn.LSTM(
-                input_size=input_dim,
-                hidden_size=hidden_dim,
-                num_layers=num_layers,
-                batch_first=True,
-                dropout=dropout if num_layers > 1 else 0.0,
-            )
-            self.fc = nn.Sequential(
-                nn.Linear(hidden_dim, 16),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(16, 1),
-            )
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            out, _ = self.lstm(x)
-            last_step = out[:, -1, :]
-            logits = self.fc(last_step)
-            return logits.squeeze(-1)
-
-
-class GridLSTMAnomalyDetector:
-    """
-    Wrapper for PyTorch LSTM to provide standard fit/predict/predict_proba interfaces
-    and leak-free temporal sequence formatting.
-    """
-    def __init__(self, window_size: int = 5, hidden_dim: int = 32, num_layers: int = 2, epochs: int = 15, lr: float = 0.005):
-        self.window_size = window_size
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.epochs = epochs
-        self.lr = lr
-        self.model: Optional[PyTorchLSTM] = None
-        self.input_dim: Optional[int] = None
-
-    def _create_sequences(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-        """Creates sliding time-window sequences with backward padding."""
-        n_samples, n_feats = X.shape
-        padded_X = np.pad(X, ((self.window_size - 1, 0), (0, 0)), mode="edge")
-        seqs = np.zeros((n_samples, self.window_size, n_feats), dtype=np.float32)
-        for i in range(n_samples):
-            seqs[i] = padded_X[i : i + self.window_size]
-        return seqs, y
-
-    def fit(self, X: np.ndarray, y: Union[np.ndarray, list]):
-        if not HAS_TORCH:
-            logger.warning("PyTorch is not available. Skipping LSTM training.")
-            return self
-
-        X_arr = np.asarray(X, dtype=np.float32)
-        y_arr = np.asarray(y, dtype=np.float32)
-        self.input_dim = X_arr.shape[1]
-
-        seqs, labels = self._create_sequences(X_arr, y_arr)
-        t_X = torch.tensor(seqs, dtype=torch.float32)
-        t_y = torch.tensor(labels, dtype=torch.float32)
-
-        dataset = TensorDataset(t_X, t_y)
-        loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-        self.model = PyTorchLSTM(
-            input_dim=self.input_dim,
-            hidden_dim=self.hidden_dim,
-            num_layers=self.num_layers,
-        )
-        self.model.train()
-        criterion = nn.BCEWithLogitsLoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-
-        for _ in range(self.epochs):
-            for batch_x, batch_y in loader:
-                optimizer.zero_grad()
-                logits = self.model(batch_x)
-                loss = criterion(logits, batch_y)
-                loss.backward()
-                optimizer.step()
-
-        return self
-
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        if not HAS_TORCH or self.model is None:
-            # Fallback uniform probability
-            p = np.full(len(X), 0.5)
-            return np.column_stack([1.0 - p, p])
-
-        self.model.eval()
-        X_arr = np.asarray(X, dtype=np.float32)
-        seqs, _ = self._create_sequences(X_arr)
-        t_X = torch.tensor(seqs, dtype=torch.float32)
-
-        with torch.no_grad():
-            logits = self.model(t_X)
-            probs = torch.sigmoid(logits).cpu().numpy()
-
-        probs = np.clip(probs, 0.0, 1.0)
-        return np.column_stack([1.0 - probs, probs])
-
-    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
-        probs = self.predict_proba(X)[:, 1]
-        return (probs >= threshold).astype(int)
-
-
-def train_lstm_model(
-    X_train: np.ndarray,
-    y_train: Union[np.ndarray, list],
-    window_size: int = 5,
-    epochs: int = 15,
-    random_state: int = 42,
-) -> Optional[GridLSTMAnomalyDetector]:
-    """
-    Trains a temporal PyTorch LSTM neural network for sequential smart grid anomaly detection.
-    """
-    if not HAS_TORCH:
-        return None
-    if random_state is not None:
-        torch.manual_seed(random_state)
-    detector = GridLSTMAnomalyDetector(window_size=window_size, epochs=epochs)
-    detector.fit(X_train, y_train)
-    return detector
-
-
-def evaluate_lstm_model(
-    model: GridLSTMAnomalyDetector,
-    X_test: np.ndarray,
-    y_test: Union[np.ndarray, list],
-) -> Dict[str, Any]:
-    """
-    Evaluates PyTorch LSTM on unseen test data.
-    """
-    y_true = np.array(y_test, dtype=int)
-    prob_matrix = model.predict_proba(X_test)
-    scores = prob_matrix[:, 1]
-    y_pred = (scores >= 0.5).astype(int)
-
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
-
-    try:
-        auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
-    except Exception:
-        auc = 0.5
-
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "roc_auc": float(auc),
-        "false_positive_rate": float(fpr),
-        "confusion_matrix": cm.tolist(),
-        "tp": int(tp),
-        "fp": int(fp),
-        "tn": int(tn),
-        "fn": int(fn),
-        "predictions": y_pred.tolist(),
-        "anomaly_scores": scores.tolist(),
-    }
+    return model.evaluate(X_test, y_test)
 
 
 def train_random_forest(
@@ -567,14 +127,13 @@ def train_random_forest(
     """
     Trains a Random Forest Classifier for supervised grid anomaly detection.
     """
-    y_arr = np.array(y_train, dtype=int)
-    model = RandomForestClassifier(
+    wrapper = GridRandomForestModel(
         n_estimators=n_estimators,
         random_state=random_state,
         n_jobs=n_jobs,
     )
-    model.fit(X_train, y_arr)
-    return model
+    wrapper.fit(X_train, y_train)
+    return wrapper.model
 
 
 def evaluate_random_forest(
@@ -584,588 +143,154 @@ def evaluate_random_forest(
 ) -> Dict[str, Any]:
     """
     Evaluates Random Forest Classifier on unseen test data.
-    Computes Accuracy, Precision, Recall, F1, ROC-AUC, FPR, and Confusion Matrix.
     """
-    y_true = np.array(y_test, dtype=int)
-    y_pred = model.predict(X_test)
-
-    # Probabilities for class 1 (attack)
-    if hasattr(model, "predict_proba"):
-        prob_matrix = model.predict_proba(X_test)
-        if prob_matrix.shape[1] > 1:
-            scores = prob_matrix[:, 1]
-        else:
-            scores = prob_matrix[:, 0]
-    else:
-        scores = y_pred.astype(float)
-
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
-
-    try:
-        if len(np.unique(y_true)) > 1:
-            auc = float(roc_auc_score(y_true, scores))
-        else:
-            auc = 0.5
-    except Exception:
-        auc = 0.5
-
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    acc = accuracy_score(y_true, y_pred)
-
-    return {
-        "accuracy": float(acc),
-        "precision": float(prec),
-        "recall": float(rec),
-        "f1": float(f1),
-        "roc_auc": float(auc),
-        "false_positive_rate": float(fpr),
-        "confusion_matrix": cm.tolist(),
-        "tp": int(tp),
-        "fp": int(fp),
-        "tn": int(tn),
-        "fn": int(fn),
-        "predictions": y_pred.tolist(),
-        "anomaly_scores": scores.tolist(),
-    }
-
-
-# -----------------------------------------------------------------------------
-# PyTorch Temporal LSTM Anomaly Detector
-# -----------------------------------------------------------------------------
-if HAS_TORCH:
-    class PyTorchLSTM(nn.Module):
-        """
-        Deep Recurrent LSTM model for temporal smart-grid telemetry sequences.
-        """
-        def __init__(self, input_dim: int, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.2):
-            super().__init__()
-            self.lstm = nn.LSTM(
-                input_size=input_dim,
-                hidden_size=hidden_dim,
-                num_layers=num_layers,
-                batch_first=True,
-                dropout=dropout if num_layers > 1 else 0.0,
-            )
-            self.fc = nn.Sequential(
-                nn.Linear(hidden_dim, 16),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(16, 1),
-            )
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            out, _ = self.lstm(x)
-            last_step = out[:, -1, :]
-            logits = self.fc(last_step)
-            return logits.squeeze(-1)
-
-
-class GridLSTMAnomalyDetector:
-    """
-    Wrapper for PyTorch LSTM to provide standard fit/predict/predict_proba interfaces
-    and leak-free temporal sequence formatting.
-    """
-    def __init__(self, window_size: int = 5, hidden_dim: int = 32, num_layers: int = 2, epochs: int = 15, lr: float = 0.005):
-        self.window_size = window_size
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.epochs = epochs
-        self.lr = lr
-        self.model: Optional[PyTorchLSTM] = None
-        self.input_dim: Optional[int] = None
-
-    def _create_sequences(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-        """Creates sliding time-window sequences with backward padding."""
-        n_samples, n_feats = X.shape
-        padded_X = np.pad(X, ((self.window_size - 1, 0), (0, 0)), mode="edge")
-        seqs = np.zeros((n_samples, self.window_size, n_feats), dtype=np.float32)
-        for i in range(n_samples):
-            seqs[i] = padded_X[i : i + self.window_size]
-        return seqs, y
-
-    def fit(self, X: np.ndarray, y: Union[np.ndarray, list]):
-        if not HAS_TORCH:
-            logger.warning("PyTorch is not available. Skipping LSTM training.")
-            return self
-
-        X_arr = np.asarray(X, dtype=np.float32)
-        y_arr = np.asarray(y, dtype=np.float32)
-        self.input_dim = X_arr.shape[1]
-
-        seqs, labels = self._create_sequences(X_arr, y_arr)
-        t_X = torch.tensor(seqs, dtype=torch.float32)
-        t_y = torch.tensor(labels, dtype=torch.float32)
-
-        dataset = TensorDataset(t_X, t_y)
-        loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-        self.model = PyTorchLSTM(
-            input_dim=self.input_dim,
-            hidden_dim=self.hidden_dim,
-            num_layers=self.num_layers,
-        )
-        self.model.train()
-        criterion = nn.BCEWithLogitsLoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-
-        for _ in range(self.epochs):
-            for batch_x, batch_y in loader:
-                optimizer.zero_grad()
-                logits = self.model(batch_x)
-                loss = criterion(logits, batch_y)
-                loss.backward()
-                optimizer.step()
-
-        return self
-
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        if not HAS_TORCH or self.model is None:
-            # Fallback uniform probability
-            p = np.full(len(X), 0.5)
-            return np.column_stack([1.0 - p, p])
-
-        self.model.eval()
-        X_arr = np.asarray(X, dtype=np.float32)
-        seqs, _ = self._create_sequences(X_arr)
-        t_X = torch.tensor(seqs, dtype=torch.float32)
-
-        with torch.no_grad():
-            logits = self.model(t_X)
-            probs = torch.sigmoid(logits).cpu().numpy()
-
-        probs = np.clip(probs, 0.0, 1.0)
-        return np.column_stack([1.0 - probs, probs])
-
-    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
-        probs = self.predict_proba(X)[:, 1]
-        return (probs >= threshold).astype(int)
-
-
-def train_lstm_model(
-    X_train: np.ndarray,
-    y_train: Union[np.ndarray, list],
-    window_size: int = 5,
-    epochs: int = 15,
-    random_state: int = 42,
-) -> Optional[GridLSTMAnomalyDetector]:
-    """
-    Trains a temporal PyTorch LSTM neural network for sequential smart grid anomaly detection.
-    """
-    if not HAS_TORCH:
-        return None
-    if random_state is not None:
-        torch.manual_seed(random_state)
-    detector = GridLSTMAnomalyDetector(window_size=window_size, epochs=epochs)
-    detector.fit(X_train, y_train)
-    return detector
-
-
-def evaluate_lstm_model(
-    model: GridLSTMAnomalyDetector,
-    X_test: np.ndarray,
-    y_test: Union[np.ndarray, list],
-) -> Dict[str, Any]:
-    """
-    Evaluates PyTorch LSTM on unseen test data.
-    """
-    y_true = np.array(y_test, dtype=int)
-    prob_matrix = model.predict_proba(X_test)
-    scores = prob_matrix[:, 1]
-    y_pred = (scores >= 0.5).astype(int)
-
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
-
-    try:
-        auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
-    except Exception:
-        auc = 0.5
-
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "roc_auc": float(auc),
-        "false_positive_rate": float(fpr),
-        "confusion_matrix": cm.tolist(),
-        "tp": int(tp),
-        "fp": int(fp),
-        "tn": int(tn),
-        "fn": int(fn),
-        "predictions": y_pred.tolist(),
-        "anomaly_scores": scores.tolist(),
-    }
+    wrapper = GridRandomForestModel()
+    wrapper.model = model
+    wrapper.is_fitted = True
+    return wrapper.evaluate(X_test, y_test)
 
 
 def train_xgboost(
     X_train: np.ndarray,
     y_train: Union[np.ndarray, list],
     n_estimators: int = 100,
+    max_depth: int = 4,
+    learning_rate: float = 0.08,
     random_state: int = 42,
-    learning_rate: float = 0.1,
-    max_depth: int = 6,
-    n_jobs: int = -1,
 ) -> Optional[Any]:
     """
-    Trains an XGBoost Classifier with graceful fallback if xgboost is unavailable.
+    Trains an XGBoost Classifier for extreme gradient boosted attack classification.
     """
-    if not HAS_XGBOOST or XGBClassifier is None:
-        logger.warning("XGBoost is not installed or unavailable in this environment.")
+    if not HAS_XGBOOST:
+        logger.warning("XGBoost is not installed in the environment.")
         return None
-
-    y_arr = np.array(y_train, dtype=int)
-    model = XGBClassifier(
+    wrapper = GridXGBoostModel(
         n_estimators=n_estimators,
-        learning_rate=learning_rate,
         max_depth=max_depth,
+        learning_rate=learning_rate,
         random_state=random_state,
-        n_jobs=n_jobs,
-        eval_metric="logloss",
     )
-    model.fit(X_train, y_arr)
-    return model
+    wrapper.fit(X_train, y_train)
+    return wrapper.model
 
 
 def evaluate_xgboost(
-    model: Optional[Any],
-    X_test: np.ndarray,
-    y_test: Union[np.ndarray, list],
-) -> Optional[Dict[str, Any]]:
-    """
-    Evaluates XGBoost Classifier on unseen test data.
-    Gracefully returns None if model is None.
-    """
-    if model is None:
-        logger.warning("No XGBoost model provided to evaluate.")
-        return None
-
-    y_true = np.array(y_test, dtype=int)
-    y_pred = model.predict(X_test)
-
-    # Probabilities for class 1 (attack)
-    if hasattr(model, "predict_proba"):
-        prob_matrix = model.predict_proba(X_test)
-        if prob_matrix.shape[1] > 1:
-            scores = prob_matrix[:, 1]
-        else:
-            scores = prob_matrix[:, 0]
-    else:
-        scores = y_pred.astype(float)
-
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
-
-    try:
-        if len(np.unique(y_true)) > 1:
-            auc = float(roc_auc_score(y_true, scores))
-        else:
-            auc = 0.5
-    except Exception:
-        auc = 0.5
-
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    acc = accuracy_score(y_true, y_pred)
-
-    return {
-        "accuracy": float(acc),
-        "precision": float(prec),
-        "recall": float(rec),
-        "f1": float(f1),
-        "roc_auc": float(auc),
-        "false_positive_rate": float(fpr),
-        "confusion_matrix": cm.tolist(),
-        "tp": int(tp),
-        "fp": int(fp),
-        "tn": int(tn),
-        "fn": int(fn),
-        "predictions": y_pred.tolist(),
-        "anomaly_scores": scores.tolist(),
-    }
-
-
-# -----------------------------------------------------------------------------
-# PyTorch Temporal LSTM Anomaly Detector
-# -----------------------------------------------------------------------------
-if HAS_TORCH:
-    class PyTorchLSTM(nn.Module):
-        """
-        Deep Recurrent LSTM model for temporal smart-grid telemetry sequences.
-        """
-        def __init__(self, input_dim: int, hidden_dim: int = 32, num_layers: int = 2, dropout: float = 0.2):
-            super().__init__()
-            self.lstm = nn.LSTM(
-                input_size=input_dim,
-                hidden_size=hidden_dim,
-                num_layers=num_layers,
-                batch_first=True,
-                dropout=dropout if num_layers > 1 else 0.0,
-            )
-            self.fc = nn.Sequential(
-                nn.Linear(hidden_dim, 16),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(16, 1),
-            )
-
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            out, _ = self.lstm(x)
-            last_step = out[:, -1, :]
-            logits = self.fc(last_step)
-            return logits.squeeze(-1)
-
-
-class GridLSTMAnomalyDetector:
-    """
-    Wrapper for PyTorch LSTM to provide standard fit/predict/predict_proba interfaces
-    and leak-free temporal sequence formatting.
-    """
-    def __init__(self, window_size: int = 5, hidden_dim: int = 32, num_layers: int = 2, epochs: int = 15, lr: float = 0.005):
-        self.window_size = window_size
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.epochs = epochs
-        self.lr = lr
-        self.model: Optional[PyTorchLSTM] = None
-        self.input_dim: Optional[int] = None
-
-    def _create_sequences(self, X: np.ndarray, y: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-        """Creates sliding time-window sequences with backward padding."""
-        n_samples, n_feats = X.shape
-        padded_X = np.pad(X, ((self.window_size - 1, 0), (0, 0)), mode="edge")
-        seqs = np.zeros((n_samples, self.window_size, n_feats), dtype=np.float32)
-        for i in range(n_samples):
-            seqs[i] = padded_X[i : i + self.window_size]
-        return seqs, y
-
-    def fit(self, X: np.ndarray, y: Union[np.ndarray, list]):
-        if not HAS_TORCH:
-            logger.warning("PyTorch is not available. Skipping LSTM training.")
-            return self
-
-        X_arr = np.asarray(X, dtype=np.float32)
-        y_arr = np.asarray(y, dtype=np.float32)
-        self.input_dim = X_arr.shape[1]
-
-        seqs, labels = self._create_sequences(X_arr, y_arr)
-        t_X = torch.tensor(seqs, dtype=torch.float32)
-        t_y = torch.tensor(labels, dtype=torch.float32)
-
-        dataset = TensorDataset(t_X, t_y)
-        loader = DataLoader(dataset, batch_size=32, shuffle=True)
-
-        self.model = PyTorchLSTM(
-            input_dim=self.input_dim,
-            hidden_dim=self.hidden_dim,
-            num_layers=self.num_layers,
-        )
-        self.model.train()
-        criterion = nn.BCEWithLogitsLoss()
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-
-        for _ in range(self.epochs):
-            for batch_x, batch_y in loader:
-                optimizer.zero_grad()
-                logits = self.model(batch_x)
-                loss = criterion(logits, batch_y)
-                loss.backward()
-                optimizer.step()
-
-        return self
-
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        if not HAS_TORCH or self.model is None:
-            # Fallback uniform probability
-            p = np.full(len(X), 0.5)
-            return np.column_stack([1.0 - p, p])
-
-        self.model.eval()
-        X_arr = np.asarray(X, dtype=np.float32)
-        seqs, _ = self._create_sequences(X_arr)
-        t_X = torch.tensor(seqs, dtype=torch.float32)
-
-        with torch.no_grad():
-            logits = self.model(t_X)
-            probs = torch.sigmoid(logits).cpu().numpy()
-
-        probs = np.clip(probs, 0.0, 1.0)
-        return np.column_stack([1.0 - probs, probs])
-
-    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
-        probs = self.predict_proba(X)[:, 1]
-        return (probs >= threshold).astype(int)
-
-
-def train_lstm_model(
-    X_train: np.ndarray,
-    y_train: Union[np.ndarray, list],
-    window_size: int = 5,
-    epochs: int = 15,
-    random_state: int = 42,
-) -> Optional[GridLSTMAnomalyDetector]:
-    """
-    Trains a temporal PyTorch LSTM neural network for sequential smart grid anomaly detection.
-    """
-    if not HAS_TORCH:
-        return None
-    if random_state is not None:
-        torch.manual_seed(random_state)
-    detector = GridLSTMAnomalyDetector(window_size=window_size, epochs=epochs)
-    detector.fit(X_train, y_train)
-    return detector
-
-
-def evaluate_lstm_model(
-    model: GridLSTMAnomalyDetector,
+    model: Any,
     X_test: np.ndarray,
     y_test: Union[np.ndarray, list],
 ) -> Dict[str, Any]:
     """
-    Evaluates PyTorch LSTM on unseen test data.
+    Evaluates XGBoost model on unseen test data.
     """
-    y_true = np.array(y_test, dtype=int)
-    prob_matrix = model.predict_proba(X_test)
-    scores = prob_matrix[:, 1]
-    y_pred = (scores >= 0.5).astype(int)
+    if model is None:
+        return {}
+    wrapper = GridXGBoostModel()
+    wrapper.model = model
+    wrapper.is_fitted = True
+    return wrapper.evaluate(X_test, y_test)
 
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
 
-    try:
-        auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
-    except Exception:
-        auc = 0.5
+def train_mlp_model(
+    X_train: np.ndarray,
+    y_train: Union[np.ndarray, list],
+    hidden_layer_sizes: Tuple[int, ...] = (64, 32),
+    max_iter: int = 150,
+    random_state: int = 42,
+) -> MLPClassifier:
+    """
+    Trains a Multi-Layer Perceptron neural network for smart grid anomaly classification.
+    """
+    wrapper = GridMLPModel(
+        hidden_layer_sizes=hidden_layer_sizes,
+        max_iter=max_iter,
+        random_state=random_state,
+    )
+    wrapper.fit(X_train, y_train)
+    return wrapper.model
 
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "roc_auc": float(auc),
-        "false_positive_rate": float(fpr),
-        "confusion_matrix": cm.tolist(),
-        "tp": int(tp),
-        "fp": int(fp),
-        "tn": int(tn),
-        "fn": int(fn),
-        "predictions": y_pred.tolist(),
-        "anomaly_scores": scores.tolist(),
-    }
+
+def evaluate_mlp_model(
+    model: MLPClassifier,
+    X_test: np.ndarray,
+    y_test: Union[np.ndarray, list],
+) -> Dict[str, Any]:
+    """
+    Evaluates Multi-Layer Perceptron model on unseen test data.
+    """
+    wrapper = GridMLPModel()
+    wrapper.model = model
+    wrapper.is_fitted = True
+    return wrapper.evaluate(X_test, y_test)
 
 
 def compare_all_models(
-    models_dict: Dict[str, Any],
-    X_test: np.ndarray,
-    y_test: Union[np.ndarray, list],
-) -> Tuple[pd.DataFrame, Dict[str, Dict[str, Any]]]:
+    models_or_evals: Union[Dict[str, Any], Dict[str, Dict[str, Any]]],
+    X_test: Optional[np.ndarray] = None,
+    y_test: Optional[Union[np.ndarray, list]] = None,
+) -> Union[pd.DataFrame, Tuple[pd.DataFrame, Dict[str, Dict[str, Any]]]]:
     """
-    Evaluates a dictionary of trained models on unseen test data.
-    Automatically dispatches to the corresponding evaluator based on model type or dictionary key.
-    
-    Parameters
-    ----------
-    models_dict : Dict[str, Any]
-        Dictionary mapping model names (e.g., 'Isolation Forest', 'Random Forest', 'XGBoost', 'MLP Neural Network')
-        to their trained model objects.
-    X_test : np.ndarray
-        Test feature matrix.
-    y_test : Union[np.ndarray, list]
-        Ground-truth labels (0 = normal, 1 = attack).
-
-    Returns
-    -------
-    comparison_df : pd.DataFrame
-        DataFrame summarizing metrics across all evaluated models:
-        [Model, Accuracy, Precision, Recall, F1-score, ROC-AUC, False Positive Rate, TP, FP, TN, FN]
-    detailed_results : Dict[str, Dict[str, Any]]
-        Full evaluation dictionaries including raw predictions, anomaly scores, and confusion matrices.
+    Constructs a comparative summary DataFrame across all models.
+    Supports two calling patterns:
+    1. compare_all_models(evaluations_dict) -> pd.DataFrame
+    2. compare_all_models(models_dict, X_test, y_test) -> (pd.DataFrame, detailed_evals)
     """
-    y_true = np.array(y_test, dtype=int)
-    records = []
-    detailed_results: Dict[str, Dict[str, Any]] = {}
-
-    for name, model in models_dict.items():
-        if model is None:
-            continue
-
-        eval_res = None
-        # Dispatch based on model instance or name
-        if isinstance(model, IsolationForest) or "isolation" in name.lower():
-            eval_res = evaluate_isolation_forest(model, X_test, y_true)
-        elif isinstance(model, RandomForestClassifier) or ("random" in name.lower() and "forest" in name.lower()):
-            eval_res = evaluate_random_forest(model, X_test, y_true)
-        elif (HAS_XGBOOST and isinstance(model, XGBClassifier)) or "xgb" in name.lower():
-            eval_res = evaluate_xgboost(model, X_test, y_true)
-        elif isinstance(model, MLPClassifier) or ("mlp" in name.lower() and "lstm" not in name.lower()):
-            eval_res = evaluate_mlp_model(model, X_test, y_true)
-        elif (HAS_TORCH and isinstance(model, GridLSTMAnomalyDetector)) or "lstm" in name.lower():
-            eval_res = evaluate_lstm_model(model, X_test, y_true)
-        else:
-            # Generic fallback: try standard predict and predict_proba
-            try:
-                y_pred = model.predict(X_test)
-                if hasattr(model, "predict_proba"):
-                    prob_matrix = model.predict_proba(X_test)
-                    scores = prob_matrix[:, 1] if prob_matrix.shape[1] > 1 else prob_matrix[:, 0]
-                elif hasattr(model, "decision_function"):
-                    scores = model.decision_function(X_test)
-                else:
-                    scores = y_pred.astype(float)
-
-                cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-                tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-                fpr = float(fp) / float(fp + tn) if (fp + tn) > 0 else 0.0
-                try:
-                    auc = float(roc_auc_score(y_true, scores)) if len(np.unique(y_true)) > 1 else 0.5
-                except Exception:
-                    auc = 0.5
-
-                eval_res = {
-                    "accuracy": float(accuracy_score(y_true, y_pred)),
-                    "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-                    "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-                    "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-                    "roc_auc": float(auc),
-                    "false_positive_rate": float(fpr),
-                    "confusion_matrix": cm.tolist(),
-                    "tp": int(tp),
-                    "fp": int(fp),
-                    "tn": int(tn),
-                    "fn": int(fn),
-                    "predictions": y_pred.tolist(),
-                    "anomaly_scores": scores.tolist() if isinstance(scores, np.ndarray) else list(scores),
-                }
-            except Exception as e:
-                logger.error(f"Failed generic evaluation for model '{name}': {e}")
+    if X_test is not None and y_test is not None:
+        # Pattern 2: evaluate models on the fly
+        detailed: Dict[str, Dict[str, Any]] = {}
+        for name, m in models_or_evals.items():
+            if m is None:
                 continue
+            if isinstance(m, IsolationForest):
+                detailed[name] = evaluate_isolation_forest(m, X_test, y_test)
+            elif isinstance(m, RandomForestClassifier):
+                detailed[name] = evaluate_random_forest(m, X_test, y_test)
+            elif isinstance(m, MLPClassifier):
+                detailed[name] = evaluate_mlp_model(m, X_test, y_test)
+            elif HAS_XGBOOST and isinstance(m, XGBClassifier):
+                detailed[name] = evaluate_xgboost(m, X_test, y_test)
+            elif isinstance(m, GridLSTMModel):
+                detailed[name] = evaluate_lstm_model(m, X_test, y_test)
+            elif hasattr(m, "evaluate"):
+                detailed[name] = m.evaluate(X_test, y_test)
 
-        if eval_res is not None:
-            detailed_results[name] = eval_res
-            records.append({
-                "Model": name,
-                "Accuracy": eval_res["accuracy"],
-                "Precision": eval_res["precision"],
-                "Recall": eval_res["recall"],
-                "F1-score": eval_res["f1"],
-                "ROC-AUC": eval_res["roc_auc"],
-                "False Positive Rate": eval_res["false_positive_rate"],
-                "TP": eval_res["tp"],
-                "FP": eval_res["fp"],
-                "TN": eval_res["tn"],
-                "FN": eval_res["fn"],
+        rows = []
+        for model_name, metrics in detailed.items():
+            rows.append({
+                "Model": model_name,
+                "Accuracy": metrics.get("accuracy", 0.0),
+                "Precision": metrics.get("precision", 0.0),
+                "Recall": metrics.get("recall", 0.0),
+                "F1-score": metrics.get("f1", 0.0),
+                "ROC-AUC": metrics.get("roc_auc", 0.5),
+                "False Positive Rate": metrics.get("false_positive_rate", 0.0),
+                "TP": metrics.get("tp", 0),
+                "FP": metrics.get("fp", 0),
+                "TN": metrics.get("tn", 0),
+                "FN": metrics.get("fn", 0),
+                "Inference Latency (ms)": metrics.get("inference_time_sec", 0.0) * 1000.0,
             })
+        return pd.DataFrame(rows), detailed
 
-    comparison_df = pd.DataFrame(records)
-    return comparison_df, detailed_results
+    # Pattern 1: passed a precomputed evaluations dict
+    rows = []
+    for model_name, metrics in models_or_evals.items():
+        if metrics:
+            rows.append({
+                "Model": model_name,
+                "Accuracy": metrics.get("accuracy", 0.0),
+                "Precision": metrics.get("precision", 0.0),
+                "Recall": metrics.get("recall", 0.0),
+                "F1-score": metrics.get("f1", 0.0),
+                "F1-Score": metrics.get("f1", 0.0),
+                "ROC-AUC": metrics.get("roc_auc", 0.5),
+                "False Positive Rate": metrics.get("false_positive_rate", 0.0),
+                "TP": metrics.get("tp", 0),
+                "FP": metrics.get("fp", 0),
+                "TN": metrics.get("tn", 0),
+                "FN": metrics.get("fn", 0),
+                "Inference Latency (ms)": metrics.get("inference_time_sec", 0.0) * 1000.0,
+            })
+    return pd.DataFrame(rows)
 
 
 def train_and_evaluate_all_models(
@@ -1173,55 +298,65 @@ def train_and_evaluate_all_models(
     y_train: Union[np.ndarray, list],
     X_test: np.ndarray,
     y_test: Union[np.ndarray, list],
+    contamination: Optional[float] = None,
     random_state: int = 42,
-) -> Tuple[Dict[str, Any], pd.DataFrame, Dict[str, Dict[str, Any]]]:
+    progress_callback: Optional[Callable[[str, float], None]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]], pd.DataFrame]:
     """
-    Trains all four models (Isolation Forest, Random Forest, XGBoost, MLP)
-    and evaluates them systematically on unseen test data without data leakage.
-
-    Returns
-    -------
-    models : Dict[str, Any]
-        Dictionary containing trained model instances.
-    comparison_df : pd.DataFrame
-        Consolidated metrics table across all four models.
-    detailed_results : Dict[str, Dict[str, Any]]
-        Full dictionary containing per-model metrics, predictions, and anomaly scores.
+    Comprehensive pipeline training and evaluating all five architectures:
+    1. Isolation Forest (Unsupervised)
+    2. Random Forest (Supervised Bagging)
+    3. XGBoost (Supervised Gradient Boosting)
+    4. MLP Neural Network (Deep Feedforward)
+    5. PyTorch LSTM (Deep Temporal RNN)
     """
     models: Dict[str, Any] = {}
+    evaluations: Dict[str, Dict[str, Any]] = {}
 
-    # 1. Isolation Forest (Unsupervised)
-    contam = calibrate_contamination(y_train)
-    models["Isolation Forest"] = train_isolation_forest(
-        X_train, contamination=contam, random_state=random_state
-    )
+    if contamination is None:
+        contamination = calibrate_contamination(y_train)
 
-    # 2. Random Forest (Supervised Ensemble)
-    models["Random Forest"] = train_random_forest(
-        X_train, y_train, n_estimators=100, random_state=random_state
-    )
+    # 1. Isolation Forest
+    if progress_callback:
+        progress_callback("Isolation Forest", 0.1)
+    if_model = train_isolation_forest(X_train, contamination=contamination, random_state=random_state)
+    models["Isolation Forest"] = if_model
+    evaluations["Isolation Forest"] = evaluate_isolation_forest(if_model, X_test, y_test)
 
-    # 3. XGBoost (Gradient Boosted Trees)
+    # 2. Random Forest
+    if progress_callback:
+        progress_callback("Random Forest", 0.3)
+    rf_model = train_random_forest(X_train, y_train, random_state=random_state)
+    models["Random Forest"] = rf_model
+    evaluations["Random Forest"] = evaluate_random_forest(rf_model, X_test, y_test)
+
+    # 3. XGBoost
     if HAS_XGBOOST:
-        xgb_model = train_xgboost(
-            X_train, y_train, n_estimators=100, random_state=random_state
-        )
+        if progress_callback:
+            progress_callback("XGBoost", 0.5)
+        xgb_model = train_xgboost(X_train, y_train, random_state=random_state)
         if xgb_model is not None:
             models["XGBoost"] = xgb_model
+            evaluations["XGBoost"] = evaluate_xgboost(xgb_model, X_test, y_test)
 
-    # 4. MLP Neural Network (Deep/Neural Baseline)
-    models["MLP Neural Network"] = train_mlp_model(
-        X_train, y_train, random_state=random_state
-    )
+    # 4. MLP Neural Network
+    if progress_callback:
+        progress_callback("MLP Neural Network", 0.7)
+    mlp_model = train_mlp_model(X_train, y_train, random_state=random_state)
+    models["MLP Neural Network"] = mlp_model
+    evaluations["MLP Neural Network"] = evaluate_mlp_model(mlp_model, X_test, y_test)
 
-    # 5. Temporal LSTM Neural Network (PyTorch Sequential Anomaly Detector)
+    # 5. Temporal PyTorch LSTM
     if HAS_TORCH:
-        lstm_model = train_lstm_model(
-            X_train, y_train, window_size=5, epochs=15, random_state=random_state
-        )
+        if progress_callback:
+            progress_callback("PyTorch LSTM", 0.85)
+        lstm_model = train_lstm_model(X_train, y_train, random_state=random_state)
         if lstm_model is not None:
-            models["Temporal LSTM (PyTorch)"] = lstm_model
+            models["PyTorch LSTM"] = lstm_model
+            evaluations["PyTorch LSTM"] = evaluate_lstm_model(lstm_model, X_test, y_test)
 
-    # Evaluate all models
-    comparison_df, detailed_results = compare_all_models(models, X_test, y_test)
-    return models, comparison_df, detailed_results
+    if progress_callback:
+        progress_callback("Complete", 1.0)
+
+    comparison_df = compare_all_models(evaluations)
+    return models, comparison_df, evaluations

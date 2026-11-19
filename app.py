@@ -245,13 +245,41 @@ with st.sidebar:
     st.subheader("📁 Telemetry Feed Source")
     data_source = st.selectbox(
         "Source Mode",
-        ["Synthetic Simulation", "Offline Academic Sample Dataset", "Upload Dataset (CSV / Excel)"],
+        [
+            "Synthetic Simulation",
+            "MSU / ORNL Research Dataset (PMU Logs)",
+            "Offline Academic Sample Dataset",
+            "Upload Dataset (CSV / Excel)",
+        ],
         index=0,
     )
 
     current_config: Dict[str, Any] = {"data_source": data_source}
 
-    if data_source == "Offline Academic Sample Dataset":
+    if data_source == "MSU / ORNL Research Dataset (PMU Logs)":
+        msu_path = os.path.join(os.path.dirname(__file__), "data", "processed", "msu_pmu_benchmark.csv")
+        if not os.path.exists(msu_path):
+            from data.download_datasets import download_msu_dataset
+            with st.spinner("Downloading MSU / ORNL Benchmark Dataset..."):
+                download_msu_dataset(target_processed_file=msu_path)
+
+        if os.path.exists(msu_path):
+            msu_df = pd.read_csv(msu_path)
+            st.caption(f"Loaded MSU/ORNL Benchmark ({len(msu_df)} records, {len(msu_df.columns)} features).")
+            if (
+                st.session_state.sim_df is None
+                or st.session_state.active_data_source != data_source
+            ):
+                st.session_state.sim_df = msu_df
+                st.session_state.sim_config = {"source": "msu_pmu_benchmark", "rows": len(msu_df)}
+                st.session_state.active_data_source = data_source
+                st.session_state.attack_history = []
+                st.session_state.models_trained = False
+                st.session_state.train_results = {}
+        else:
+            st.error("MSU/ORNL dataset not available. Please run data/download_datasets.py.")
+
+    elif data_source == "Offline Academic Sample Dataset":
         sample_path = os.path.join(os.path.dirname(__file__), "data", "sample", "smartgrid_telemetry_sample.csv")
         if os.path.exists(sample_path):
             sample_df = pd.read_csv(sample_path)
@@ -419,12 +447,14 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# Navigation Tabs (10 Comprehensive Operational Modules)
+# Navigation Tabs (12 Comprehensive Operational Modules)
 # -----------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
     "⚡ Command Overview",
     "📡 Telemetry & Sensors",
     "🎯 Attack Simulation Studio",
+    "🛠️ ML Training Studio",
+    "🔬 Live ML Prediction Lab",
     "🧠 Multi-Model AI Intelligence",
     "💡 Explainable AI (XAI)",
     "🔬 Cyber-Physical Integrity",
@@ -797,14 +827,292 @@ with tab3:
         st.rerun()
 
 # =============================================================================
-# TAB 4: ML/DL Model Evaluation
+# TAB 4: ML Training Studio (Interactive Classroom & Research Laboratory)
 # =============================================================================
 with tab4:
+    st.markdown("### 🛠️ Interactive Machine Learning & Deep Learning Training Studio")
+    st.caption("Live, interactive training workspace. Select datasets, configure hyperparameters, train individual or ensemble architectures with real-time feedback.")
+
+    studio_c1, studio_c2 = st.columns([1, 2])
+
+    with studio_c1:
+        st.markdown("#### ⚙️ Training Configuration")
+        studio_target_dataset = st.selectbox(
+            "Training Dataset",
+            [
+                "Active Telemetry Stream (Current View)",
+                "MSU / ORNL Research Dataset (PMU Relay Logs)",
+                "Synthetic Simulation Benchmark",
+            ],
+            key="studio_target_dataset",
+        )
+
+        studio_models_selected = st.multiselect(
+            "Select Architectures to Train",
+            [
+                "Isolation Forest (Unsupervised)",
+                "Random Forest (Supervised Bagging)",
+                "XGBoost (Gradient Boosting)",
+                "MLP Neural Network (Feedforward)",
+                "PyTorch LSTM (Temporal Recurrent)",
+            ],
+            default=[
+                "Isolation Forest (Unsupervised)",
+                "Random Forest (Supervised Bagging)",
+                "XGBoost (Gradient Boosting)",
+                "MLP Neural Network (Feedforward)",
+                "PyTorch LSTM (Temporal Recurrent)",
+            ],
+            key="studio_models_selected",
+        )
+
+        studio_test_ratio = st.slider("Chronological Test Ratio", min_value=0.10, max_value=0.40, value=0.25, step=0.05, key="studio_test_ratio")
+        studio_seed = st.number_input("Reproducible Seed", value=42, step=1, key="studio_seed")
+
+        with st.expander("Hyperparameter Tuning (Advanced)"):
+            studio_rf_trees = st.slider("Random Forest Trees", 10, 200, 100, step=10, key="studio_rf_trees")
+            studio_xgb_lr = st.slider("XGBoost Learning Rate", 0.01, 0.30, 0.08, step=0.01, key="studio_xgb_lr")
+            studio_dl_epochs = st.slider("Deep Learning Epochs (MLP & LSTM)", 5, 50, 10, step=5, key="studio_dl_epochs")
+
+        start_studio_train = st.button("🚀 Start Live Model Training", type="primary", use_container_width=True)
+
+    with studio_c2:
+        st.markdown("#### 📊 Real-Time Training Status & Logs")
+        if start_studio_train:
+            if not studio_models_selected:
+                st.warning("Please select at least one architecture to train.")
+            else:
+                # Prepare data
+                if studio_target_dataset == "Active Telemetry Stream (Current View)":
+                    train_source_df = df.copy()
+                elif studio_target_dataset == "MSU / ORNL Research Dataset (PMU Relay Logs)":
+                    from data.download_datasets import load_dataset
+                    train_source_df, _ = load_dataset("msu_benchmark")
+                else:
+                    from data.download_datasets import load_dataset
+                    train_source_df, _ = load_dataset("synthetic_sample")
+
+                is_valid, msg, clean_train_df = validate_grid_dataframe(train_source_df)
+                if not is_valid:
+                    st.error(f"Dataset error: {msg}")
+                else:
+                    train_df_part, test_df_part = chronological_train_test_split(clean_train_df, test_ratio=studio_test_ratio)
+                    studio_pipeline = LeakFreeGridPipeline(window_size=5)
+                    X_tr = studio_pipeline.fit_transform(train_df_part)
+                    X_te = studio_pipeline.transform(test_df_part)
+                    y_tr = train_df_part["target"].values
+                    y_te = test_df_part["target"].values
+
+                    status_box = st.empty()
+                    progress_bar = st.progress(0.0)
+                    log_box = st.empty()
+                    logs = []
+
+                    start_wall_time = time.time()
+                    studio_evals = {}
+                    studio_models_dict = {}
+
+                    total_steps = len(studio_models_selected)
+                    step_i = 0
+
+                    for m_name in studio_models_selected:
+                        step_i += 1
+                        progress_bar.progress(float(step_i) / float(total_steps + 1))
+                        status_box.info(f"⏳ Training architecture {step_i}/{total_steps}: **{m_name}**...")
+
+                        if "Isolation Forest" in m_name:
+                            from ml_models.isolation_forest import GridIsolationForestModel
+                            c_ratio = calibrate_contamination(y_tr)
+                            iso_m = GridIsolationForestModel(contamination=c_ratio, random_state=int(studio_seed)).fit(X_tr)
+                            studio_models_dict["Isolation Forest"] = iso_m
+                            ev = iso_m.evaluate(X_te, y_te)
+                            studio_evals["Isolation Forest"] = ev
+                            logs.append(f"[{time.strftime('%H:%M:%S')}] Isolation Forest completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
+
+                        elif "Random Forest" in m_name:
+                            from ml_models.random_forest import GridRandomForestModel
+                            rf_m = GridRandomForestModel(n_estimators=studio_rf_trees, random_state=int(studio_seed)).fit(X_tr, y_tr)
+                            studio_models_dict["Random Forest"] = rf_m
+                            ev = rf_m.evaluate(X_te, y_te)
+                            studio_evals["Random Forest"] = ev
+                            logs.append(f"[{time.strftime('%H:%M:%S')}] Random Forest ({studio_rf_trees} trees) completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
+
+                        elif "XGBoost" in m_name:
+                            from ml_models.xgboost_model import GridXGBoostModel, HAS_XGBOOST
+                            if HAS_XGBOOST:
+                                xgb_m = GridXGBoostModel(learning_rate=studio_xgb_lr, random_state=int(studio_seed)).fit(X_tr, y_tr)
+                                studio_models_dict["XGBoost"] = xgb_m
+                                ev = xgb_m.evaluate(X_te, y_te)
+                                studio_evals["XGBoost"] = ev
+                                logs.append(f"[{time.strftime('%H:%M:%S')}] XGBoost (lr={studio_xgb_lr}) completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
+
+                        elif "MLP Neural Network" in m_name:
+                            from ml_models.mlp_model import GridMLPModel
+                            mlp_m = GridMLPModel(max_iter=studio_dl_epochs * 10, random_state=int(studio_seed)).fit(X_tr, y_tr)
+                            studio_models_dict["MLP Neural Network"] = mlp_m
+                            ev = mlp_m.evaluate(X_te, y_te)
+                            studio_evals["MLP Neural Network"] = ev
+                            logs.append(f"[{time.strftime('%H:%M:%S')}] MLP Neural Network completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
+
+                        elif "PyTorch LSTM" in m_name:
+                            from ml_models.lstm_model import GridLSTMModel, HAS_TORCH
+                            if HAS_TORCH:
+                                lstm_m = GridLSTMModel(epochs=studio_dl_epochs, random_state=int(studio_seed)).fit(X_tr, y_tr)
+                                studio_models_dict["PyTorch LSTM"] = lstm_m
+                                ev = lstm_m.evaluate(X_te, y_te)
+                                studio_evals["PyTorch LSTM"] = ev
+                                logs.append(f"[{time.strftime('%H:%M:%S')}] PyTorch LSTM ({studio_dl_epochs} epochs) completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
+
+                        log_box.code("\n".join(logs), language="text")
+
+                    progress_bar.progress(1.0)
+                    elapsed_total = time.time() - start_wall_time
+                    status_box.success(f"🎉 Training completed successfully in {elapsed_total:.2f} seconds!")
+
+                    # Save to session state
+                    studio_comp_df = compare_all_models(studio_evals)
+                    st.session_state.pipeline = studio_pipeline
+                    st.session_state.train_results = {
+                        "train_df": train_df_part,
+                        "test_df": test_df_part,
+                        "y_train": y_tr,
+                        "y_test": y_te,
+                        "models": studio_models_dict,
+                        "comparison_df": studio_comp_df,
+                        "detailed_results": studio_evals,
+                        "split_ratio": studio_test_ratio,
+                    }
+                    st.session_state.models_trained = True
+                    st.dataframe(studio_comp_df, use_container_width=True)
+
+        elif st.session_state.models_trained:
+            st.info("Models are currently trained and cached in active session state.")
+            comp_show = st.session_state.train_results.get("comparison_df")
+            if comp_show is not None:
+                st.dataframe(comp_show, use_container_width=True)
+        else:
+            st.info("👈 Configure models and click **'Start Live Model Training'** to begin.")
+
+
+# =============================================================================
+# TAB 5: Live ML Prediction Lab (Live Lecturer Demonstration)
+# =============================================================================
+with tab5:
+    st.markdown("### 🔬 Live ML Prediction & Diagnostics Lab")
+    st.caption("Demonstrate live inference directly to lecturer. Feed custom telemetry or presets, click Predict, and view model decision, confidence, and latency.")
+
+    pred_c1, pred_c2 = st.columns([1, 1])
+
+    with pred_c1:
+        st.markdown("#### 🎛️ Input Telemetry Parameters")
+        chosen_preset = st.selectbox(
+            "Quick Demonstration Presets",
+            [
+                "Custom Manual Entry",
+                "🟢 Nominal Baseline (230V, 10A, 2.3kW, 50Hz)",
+                "🚨 Voltage Spike Attack (252V Overvoltage)",
+                "🚨 Frequency Sag (48.95Hz Excursion)",
+                "🚨 Load Drift FDIA (P=4.85kW Inconsistent)",
+                "🚨 Telemetry Dropout / Blackout (0V, 0A)",
+            ],
+            key="lab_preset_choice",
+        )
+
+        # Preset values
+        if "Nominal Baseline" in chosen_preset:
+            def_v, def_i, def_p, def_f = 230.1, 9.95, 2.29, 50.01
+        elif "Voltage Spike" in chosen_preset:
+            def_v, def_i, def_p, def_f = 252.4, 10.1, 2.32, 49.98
+        elif "Frequency Sag" in chosen_preset:
+            def_v, def_i, def_p, def_f = 229.8, 9.8, 2.25, 48.95
+        elif "Load Drift" in chosen_preset:
+            def_v, def_i, def_p, def_f = 230.0, 10.0, 4.85, 50.00
+        elif "Dropout" in chosen_preset:
+            def_v, def_i, def_p, def_f = 0.0, 0.0, 0.0, 0.0
+        else:
+            def_v, def_i, def_p, def_f = 230.0, 10.0, 2.30, 50.0
+
+        v_input = st.number_input("Substation Voltage (V)", value=float(def_v), format="%.2f", key="lab_v")
+        i_input = st.number_input("Phase Current (A)", value=float(def_i), format="%.2f", key="lab_i")
+        p_input = st.number_input("Active Power Load (kW)", value=float(def_p), format="%.3f", key="lab_p")
+        f_input = st.number_input("Grid Frequency (Hz)", value=float(def_f), format="%.2f", key="lab_f")
+
+        model_for_pred = st.selectbox(
+            "Inference Model",
+            [
+                "Random Forest (Supervised Bagging)",
+                "XGBoost (Gradient Boosting)",
+                "Isolation Forest (Unsupervised)",
+                "MLP Neural Network (Feedforward)",
+                "PyTorch LSTM (Temporal Recurrent)",
+            ],
+            key="lab_model_choice",
+        )
+
+        run_predict_btn = st.button("⚡ Run Live Model Prediction", type="primary", use_container_width=True)
+
+    with pred_c2:
+        st.markdown("#### 🎯 Live Inference Diagnostics")
+        if run_predict_btn:
+            # Map choice to model instance
+            m_slug = "random_forest"
+            if "XGBoost" in model_for_pred:
+                m_slug = "xgboost"
+            elif "Isolation Forest" in model_for_pred:
+                m_slug = "isolation_forest"
+            elif "MLP" in model_for_pred:
+                m_slug = "mlp"
+            elif "LSTM" in model_for_pred:
+                m_slug = "lstm"
+
+            try:
+                from predict import predict_observation
+                pred_res = predict_observation(
+                    model_name=m_slug,
+                    voltage=v_input,
+                    current=i_input,
+                    load=p_input,
+                    frequency=f_input,
+                )
+
+                if pred_res["is_attack"]:
+                    st.error(f"### 🚨 VERDICT: {pred_res['prediction']}")
+                else:
+                    st.success(f"### 🟢 VERDICT: {pred_res['prediction']}")
+
+                st.markdown(f"""
+                <div class="metric-hero" style="border-left: 4px solid {'#f43f5e' if pred_res['is_attack'] else '#10b981'};">
+                    <div class="metric-hero-label">Architecture</div>
+                    <div class="metric-hero-value" style="font-size:1.3rem;">{pred_res['model_name']}</div>
+                    <hr style="border-color:#1e3567; margin:8px 0;">
+                    <div style="font-size:0.95rem; color:#f0f4fc;">
+                        Anomaly Confidence / Score: <b style="color:#00d4ff;">{pred_res['anomaly_score_or_prob']*100:.2f}%</b><br>
+                        Inference Execution Latency: <b style="color:#10b981;">{pred_res['latency_ms']:.3f} ms</b>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Physical consistency check
+                p_expected = (v_input * i_input) / 1000.0
+                residual = abs(p_input - p_expected)
+                st.markdown("##### 🔬 Physical Ohm Law Consistency Check")
+                st.caption(f"Theoretical Active Power: $P = V \\times I / 1000 = {p_expected:.3f}\\text{{ kW}}$. Observed: `{p_input:.3f} kW`. Residual: `{residual:.3f} kW`.")
+
+            except Exception as e:
+                st.error(f"Inference error: {str(e)}")
+        else:
+            st.info("👈 Select a preset or adjust telemetry values, then click **'Run Live Model Prediction'**.")
+
+
+# =============================================================================
+# TAB 6: ML/DL Model Evaluation & Benchmarks
+# =============================================================================
+with tab6:
     st.markdown("### 🧠 Machine Learning & Deep Learning Model Benchmarks")
     st.caption("Rigorous, leak-free chronological evaluation comparing Unsupervised, Ensemble, Gradient Boosted, and Deep Neural architectures.")
 
     if not st.session_state.models_trained:
-        st.info("👈 Please click **'🚀 Train & Evaluate Models'** in the sidebar to train and compare all 4 models on unseen chronological test data.")
+        st.info("👈 Please click **'🚀 Train & Evaluate Models'** in the sidebar or use the **'🛠️ ML Training Studio'** tab to train models.")
     else:
         results = st.session_state.train_results
         test_df = results["test_df"]
@@ -891,14 +1199,14 @@ with tab4:
                 """, unsafe_allow_html=True)
 
 # =============================================================================
-# TAB 5: Explainable AI (XAI)
+# TAB 7: Explainable AI (XAI)
 # =============================================================================
-with tab5:
+with tab7:
     st.markdown("### 💡 Explainable AI (XAI) & Feature Contribution Analysis")
     st.caption("Decodes AI model decisions using global feature importances, SHAP values, and instance-level sensor contribution vectors.")
 
     if not st.session_state.models_trained:
-        st.info("Train the AI models in the sidebar to activate the Explainable AI engine.")
+        st.info("Train the AI models in the sidebar or ML Training Studio to activate the Explainable AI engine.")
     else:
         results = st.session_state.train_results
         models_dict = results.get("models", {})
@@ -1011,9 +1319,9 @@ with tab5:
                 st.caption("No saved checkpoints currently on disk. Click the button to serialize active models.")
 
 # =============================================================================
-# TAB 6: Cyber-Physical Integrity Analysis
+# TAB 8: Cyber-Physical Integrity Analysis
 # =============================================================================
-with tab6:
+with tab8:
     st.markdown("### 🔬 Cyber-Physical Power Inconsistency & Telemetry Health")
     st.caption("Deep physical validation verifying Ohm's Law, Active Power conservation ($P = V \\times I \\times \\cos\\theta$), RoCoF rate limits, and sensor dropouts.")
 
@@ -1114,9 +1422,9 @@ with tab6:
     st.plotly_chart(fig_rocof, use_container_width=True)
 
 # =============================================================================
-# TAB 7: IEEE Grid Topology & Power Flow Simulation
+# TAB 9: IEEE Grid Topology & Power Flow Simulation
 # =============================================================================
-with tab7:
+with tab9:
     st.markdown("### 🌐 Multi-Bus IEEE Smart Grid Simulation & Power Flow")
     st.caption("Integrated AC Newton-Raphson load-flow solver modeling bus voltage profiles, line thermal loading, and targeted bus-level attack injection.")
 
@@ -1199,9 +1507,9 @@ with tab7:
                 st.error(f"Power flow calculation failed: {pf_res.get('error')}")
 
 # =============================================================================
-# TAB 8: Security Alerts
+# TAB 10: Security Alerts
 # =============================================================================
-with tab8:
+with tab10:
     st.markdown("### 🚨 Real-Time Security Alerts & Anomaly Feed")
     st.caption("Chronological threat assessment inspecting the latest operating intervals in the SCADA pipeline.")
 
@@ -1277,9 +1585,9 @@ with tab8:
         )
 
 # =============================================================================
-# TAB 9: Mitigation Directives
+# TAB 11: Mitigation Directives
 # =============================================================================
-with tab9:
+with tab11:
     st.markdown("### 🛡️ Prescriptive Cyber-Physical Mitigation Actions")
     st.caption("Automated industrial response protocols triggered dynamically by detected physical sensor deviations.")
 
@@ -1355,9 +1663,9 @@ with tab9:
             """, unsafe_allow_html=True)
 
 # =============================================================================
-# TAB 10: Forensics & Export Reports
+# TAB 12: Forensics & Export Reports
 # =============================================================================
-with tab10:
+with tab12:
     st.markdown("### 📑 Cyber Incident & Forensic Audit Report")
     st.caption("Generate, review, and download audit-ready HTML & PDF-printable reports combining live telemetry, attack scenarios, and ML benchmarks.")
 
