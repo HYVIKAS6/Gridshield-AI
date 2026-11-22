@@ -5,9 +5,9 @@
 [![Framework: Streamlit](https://img.shields.io/badge/Framework-Streamlit-FF4B4B.svg)](https://streamlit.io/)
 [![Deep Learning: PyTorch](https://img.shields.io/badge/Deep%20Learning-PyTorch-EE4C2C.svg)](https://pytorch.org/)
 [![Tests: Pytest Passing](https://img.shields.io/badge/Tests-23%20Passed-brightgreen.svg)]()
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit%20Cloud-00D4FF?style=for-the-badge&logo=streamlit)](https://gridshield-ai.streamlit.app/)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit%20Cloud-00D4FF?style=for-the-badge&logo=streamlit)](https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/)
 
-> **🌐 Live Interactive Application:** [https://gridshield-ai.streamlit.app/](https://gridshield-ai.streamlit.app/)  
+> **🌐 Live Interactive Application:** [https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/](https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/)  
 > **Final Year B.E. Engineering Project**  
 > An academic, technically defensible, and interactive machine learning platform combining electrical power domain physics, empirical smart-grid PMU datasets, multi-algorithm AI benchmarking, and real-time cyber-incident forensics.
 
