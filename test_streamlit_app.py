@@ -54,3 +54,26 @@ def test_app_train_models_chronological_flow():
     assert 0.0 <= mlp_res["accuracy"] <= 1.0
     assert 0.0 <= if_res["roc_auc"] <= 1.0
     assert 0.0 <= mlp_res["roc_auc"] <= 1.0
+
+
+def test_studio_training_and_live_prediction(monkeypatch):
+    """Fresh dashboard sessions can train and predict without CLI checkpoints."""
+    import predict
+
+    def unexpected_checkpoint(*args):
+        pytest.fail("Dashboard prediction tried to load a disk checkpoint")
+
+    monkeypatch.setattr(predict, "load_trained_model", unexpected_checkpoint)
+    at = AppTest.from_file("app.py", default_timeout=60).run()
+    at.multiselect(key="studio_models_selected").set_value(["Random Forest (Supervised Bagging)"])
+    next(btn for btn in at.button if "Start Live Model Training" in btn.label).click().run()
+    assert not at.exception
+    assert list(at.session_state["train_results"]["comparison_df"]["Model"]) == ["Random Forest"]
+
+    preset = at.selectbox(key="lab_preset_choice")
+    preset.select(next(label for label in preset.options if "Voltage Spike" in label)).run()
+    assert at.number_input(key="lab_v").value == 252.4
+    next(btn for btn in at.button if "Run Live Model Prediction" in btn.label).click().run()
+    assert not at.exception
+    assert any("VERDICT" in alert.value for alert in [*at.success, *at.error])
+    assert len(at.tabs) == 12

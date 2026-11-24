@@ -13,14 +13,12 @@ import os
 import sys
 import time
 import joblib
-import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from data_preprocessing import LeakFreeGridPipeline
 from ml_models.random_forest import GridRandomForestModel
 from ml_models.xgboost_model import GridXGBoostModel, HAS_XGBOOST
 from ml_models.isolation_forest import GridIsolationForestModel
@@ -66,19 +64,20 @@ PRESETS = {
 }
 
 
+MODEL_FILES = {
+    "random_forest": ("random_forest.joblib", GridRandomForestModel),
+    "xgboost": ("xgboost_model.joblib", GridXGBoostModel),
+    "isolation_forest": ("isolation_forest.joblib", GridIsolationForestModel),
+    "mlp": ("mlp_model.joblib", GridMLPModel),
+    "lstm": ("lstm_model.pt", GridLSTMModel),
+}
+
+
 def load_trained_model(model_name: str, saved_dir: str):
-    ext_map = {
-        "random_forest": ("random_forest.joblib", GridRandomForestModel),
-        "xgboost": ("xgboost_model.joblib", GridXGBoostModel),
-        "isolation_forest": ("isolation_forest.joblib", GridIsolationForestModel),
-        "mlp": ("mlp_model.joblib", GridMLPModel),
-        "lstm": ("lstm_model.pt", GridLSTMModel),
-    }
+    if model_name not in MODEL_FILES:
+        raise ValueError(f"Unknown model name: {model_name}. Choose from {list(MODEL_FILES.keys())}")
 
-    if model_name not in ext_map:
-        raise ValueError(f"Unknown model name: {model_name}. Choose from {list(ext_map.keys())}")
-
-    filename, model_cls = ext_map[model_name]
+    filename, model_cls = MODEL_FILES[model_name]
     model_path = os.path.join(saved_dir, filename)
 
     if not os.path.exists(model_path):
@@ -96,13 +95,11 @@ def predict_observation(
     saved_dir: str = os.path.join(PROJECT_ROOT, "models", "saved"),
 ):
     model = load_trained_model(model_name, saved_dir)
-    pipeline_path = os.path.join(saved_dir, "feature_pipeline.joblib")
+    pipeline = joblib.load(os.path.join(saved_dir, "feature_pipeline.joblib"))
+    return predict_with_model(model, pipeline, voltage, current, load, frequency)
 
-    if os.path.exists(pipeline_path):
-        pipeline = joblib.load(pipeline_path)
-    else:
-        pipeline = LeakFreeGridPipeline()
 
+def predict_with_model(model, pipeline, voltage, current, load, frequency):
     raw_df = pd.DataFrame([{
         "voltage": float(voltage),
         "current": float(current),

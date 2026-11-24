@@ -6,10 +6,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.joblib
-*.pt
-*.pth
-models/saved/
 .pytest_cache/
 .DS_Store
 Thumbs.db
+
