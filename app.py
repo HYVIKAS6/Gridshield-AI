@@ -4,6 +4,7 @@ Professional Industrial Cybersecurity Monitoring & AI Defense Platform.
 """
 
 import os
+import time
 from datetime import datetime
 import html
 from typing import Any, Dict, List, Optional
@@ -25,12 +26,14 @@ from data_preprocessing import (
 from model_training import (
     HAS_XGBOOST,
     calibrate_contamination,
+    compare_all_models,
     evaluate_isolation_forest,
     evaluate_mlp_model,
     train_and_evaluate_all_models,
     train_isolation_forest,
     train_mlp_model,
 )
+from ml_models.lstm_model import HAS_TORCH
 from cyber_physical import evaluate_grid_physics, get_cyber_physical_summary
 from power_simulation import (
     HAS_PANDAPOWER,
@@ -376,11 +379,13 @@ with st.sidebar:
     train_models_btn = st.button("🚀 Train & Evaluate Models", type="primary", use_container_width=True)
 
     if train_models_btn and st.session_state.sim_df is not None:
-        with st.spinner("Training all 4 models chronologically (IF, MLP, RF, XGBoost)..."):
-            active_df = st.session_state.sim_df.copy()
-            # 1. Chronological splitting
-            train_df, test_df = chronological_train_test_split(active_df, test_ratio=test_split_ratio)
+        train_df, test_df = chronological_train_test_split(st.session_state.sim_df, test_ratio=test_split_ratio)
+        if test_df.empty or set(train_df["target"]) != {0, 1}:
+            st.warning("Multi-model training needs normal and attack labels in the training partition and a separate test partition. For unlabeled data, select Isolation Forest in ML Training Studio.")
+            train_models_btn = False
 
+    if train_models_btn and st.session_state.sim_df is not None:
+        with st.spinner("Training all 4 models chronologically (IF, MLP, RF, XGBoost)..."):
             # 2. Leak-free feature pipeline fit strictly on train_df
             pipeline = LeakFreeGridPipeline(window_size=5)
             X_train = pipeline.fit_transform(train_df)
@@ -724,7 +729,7 @@ with tab3:
             index=0 if "voltage" in default_sensors else 1 if "frequency" in default_sensors else 0,
         )
 
-        atk_duration = st.slider("Attack Duration (Operating Hours)", min_value=1, max_value=min(60, len(df)), value=12)
+        atk_duration = st.slider("Attack Duration (Operating Hours)", min_value=1, max_value=min(60, len(df)), value=min(12, len(df))) if len(df) > 1 else 1
 
         # Attack-specific controls
         dropout_mode = "zero"
@@ -847,22 +852,16 @@ with tab4:
             key="studio_target_dataset",
         )
 
+        architectures = ["Isolation Forest (Unsupervised)", "Random Forest (Supervised Bagging)"]
+        if HAS_XGBOOST:
+            architectures.append("XGBoost (Gradient Boosting)")
+        architectures.append("MLP Neural Network (Feedforward)")
+        if HAS_TORCH:
+            architectures.append("PyTorch LSTM (Temporal Recurrent)")
         studio_models_selected = st.multiselect(
             "Select Architectures to Train",
-            [
-                "Isolation Forest (Unsupervised)",
-                "Random Forest (Supervised Bagging)",
-                "XGBoost (Gradient Boosting)",
-                "MLP Neural Network (Feedforward)",
-                "PyTorch LSTM (Temporal Recurrent)",
-            ],
-            default=[
-                "Isolation Forest (Unsupervised)",
-                "Random Forest (Supervised Bagging)",
-                "XGBoost (Gradient Boosting)",
-                "MLP Neural Network (Feedforward)",
-                "PyTorch LSTM (Temporal Recurrent)",
-            ],
+            architectures,
+            default=architectures,
             key="studio_models_selected",
         )
 
@@ -893,10 +892,16 @@ with tab4:
                     train_source_df, _ = load_dataset("synthetic_sample")
 
                 is_valid, msg, clean_train_df = validate_grid_dataframe(train_source_df)
+                if is_valid:
+                    train_df_part, test_df_part = chronological_train_test_split(clean_train_df, test_ratio=studio_test_ratio)
+                    supervised = any("Isolation Forest" not in name for name in studio_models_selected)
+                    if test_df_part.empty:
+                        is_valid, msg = False, "Add more rows to create a separate test partition."
+                    elif supervised and set(train_df_part["target"]) != {0, 1}:
+                        is_valid, msg = False, "Supervised training needs normal and attack labels in the training partition. Select only Isolation Forest to train on unlabeled data."
                 if not is_valid:
                     st.error(f"Dataset error: {msg}")
                 else:
-                    train_df_part, test_df_part = chronological_train_test_split(clean_train_df, test_ratio=studio_test_ratio)
                     studio_pipeline = LeakFreeGridPipeline(window_size=5)
                     X_tr = studio_pipeline.fit_transform(train_df_part)
                     X_te = studio_pipeline.transform(test_df_part)
@@ -938,13 +943,12 @@ with tab4:
                             logs.append(f"[{time.strftime('%H:%M:%S')}] Random Forest ({studio_rf_trees} trees) completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
 
                         elif "XGBoost" in m_name:
-                            from ml_models.xgboost_model import GridXGBoostModel, HAS_XGBOOST
-                            if HAS_XGBOOST:
-                                xgb_m = GridXGBoostModel(learning_rate=studio_xgb_lr, random_state=int(studio_seed)).fit(X_tr, y_tr)
-                                studio_models_dict["XGBoost"] = xgb_m
-                                ev = xgb_m.evaluate(X_te, y_te)
-                                studio_evals["XGBoost"] = ev
-                                logs.append(f"[{time.strftime('%H:%M:%S')}] XGBoost (lr={studio_xgb_lr}) completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
+                            from ml_models.xgboost_model import GridXGBoostModel
+                            xgb_m = GridXGBoostModel(learning_rate=studio_xgb_lr, random_state=int(studio_seed)).fit(X_tr, y_tr)
+                            studio_models_dict["XGBoost"] = xgb_m
+                            ev = xgb_m.evaluate(X_te, y_te)
+                            studio_evals["XGBoost"] = ev
+                            logs.append(f"[{time.strftime('%H:%M:%S')}] XGBoost (lr={studio_xgb_lr}) completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
 
                         elif "MLP Neural Network" in m_name:
                             from ml_models.mlp_model import GridMLPModel
@@ -955,13 +959,12 @@ with tab4:
                             logs.append(f"[{time.strftime('%H:%M:%S')}] MLP Neural Network completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
 
                         elif "PyTorch LSTM" in m_name:
-                            from ml_models.lstm_model import GridLSTMModel, HAS_TORCH
-                            if HAS_TORCH:
-                                lstm_m = GridLSTMModel(epochs=studio_dl_epochs, random_state=int(studio_seed)).fit(X_tr, y_tr)
-                                studio_models_dict["PyTorch LSTM"] = lstm_m
-                                ev = lstm_m.evaluate(X_te, y_te)
-                                studio_evals["PyTorch LSTM"] = ev
-                                logs.append(f"[{time.strftime('%H:%M:%S')}] PyTorch LSTM ({studio_dl_epochs} epochs) completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
+                            from ml_models.lstm_model import GridLSTMModel
+                            lstm_m = GridLSTMModel(epochs=studio_dl_epochs, random_state=int(studio_seed)).fit(X_tr, y_tr)
+                            studio_models_dict["PyTorch LSTM"] = lstm_m
+                            ev = lstm_m.evaluate(X_te, y_te)
+                            studio_evals["PyTorch LSTM"] = ev
+                            logs.append(f"[{time.strftime('%H:%M:%S')}] PyTorch LSTM ({studio_dl_epochs} epochs) completed in {ev['training_time_sec']:.2f}s (Accuracy: {ev['accuracy']:.1%}, F1: {ev['f1']:.3f})")
 
                         log_box.code("\n".join(logs), language="text")
 
@@ -1032,48 +1035,54 @@ with tab5:
         else:
             def_v, def_i, def_p, def_f = 230.0, 10.0, 2.30, 50.0
 
-        v_input = st.number_input("Substation Voltage (V)", value=float(def_v), format="%.2f", key="lab_v")
-        i_input = st.number_input("Phase Current (A)", value=float(def_i), format="%.2f", key="lab_i")
-        p_input = st.number_input("Active Power Load (kW)", value=float(def_p), format="%.3f", key="lab_p")
-        f_input = st.number_input("Grid Frequency (Hz)", value=float(def_f), format="%.2f", key="lab_f")
+        if st.session_state.get("last_lab_preset") != chosen_preset:
+            for key, value in zip(("lab_v", "lab_i", "lab_p", "lab_f"), (def_v, def_i, def_p, def_f)):
+                st.session_state[key] = float(value)
+            st.session_state.last_lab_preset = chosen_preset
 
+        v_input = st.number_input("Substation Voltage (V)", value=None, format="%.2f", key="lab_v")
+        i_input = st.number_input("Phase Current (A)", value=None, format="%.2f", key="lab_i")
+        p_input = st.number_input("Active Power Load (kW)", value=None, format="%.3f", key="lab_p")
+        f_input = st.number_input("Grid Frequency (Hz)", value=None, format="%.2f", key="lab_f")
+
+        inference_choices = {
+            "Random Forest (Supervised Bagging)": ("Random Forest", "random_forest"),
+            "XGBoost (Gradient Boosting)": ("XGBoost", "xgboost"),
+            "Isolation Forest (Unsupervised)": ("Isolation Forest", "isolation_forest"),
+            "MLP Neural Network (Feedforward)": ("MLP Neural Network", "mlp"),
+            "PyTorch LSTM (Temporal Recurrent)": ("PyTorch LSTM", "lstm"),
+        }
+        session_models = st.session_state.train_results.get("models", {}) if st.session_state.models_trained else {}
         model_for_pred = st.selectbox(
             "Inference Model",
-            [
-                "Random Forest (Supervised Bagging)",
-                "XGBoost (Gradient Boosting)",
-                "Isolation Forest (Unsupervised)",
-                "MLP Neural Network (Feedforward)",
-                "PyTorch LSTM (Temporal Recurrent)",
-            ],
+            [label for label, (name, _) in inference_choices.items() if not session_models or name in session_models],
             key="lab_model_choice",
         )
 
-        run_predict_btn = st.button("⚡ Run Live Model Prediction", type="primary", use_container_width=True)
+        run_predict_btn = st.button("⚡ Run Live Model Prediction", type="primary", use_container_width=True,
+                                    disabled=None in (v_input, i_input, p_input, f_input))
 
     with pred_c2:
         st.markdown("#### 🎯 Live Inference Diagnostics")
         if run_predict_btn:
-            # Map choice to model instance
-            m_slug = "random_forest"
-            if "XGBoost" in model_for_pred:
-                m_slug = "xgboost"
-            elif "Isolation Forest" in model_for_pred:
-                m_slug = "isolation_forest"
-            elif "MLP" in model_for_pred:
-                m_slug = "mlp"
-            elif "LSTM" in model_for_pred:
-                m_slug = "lstm"
-
+            name, slug = inference_choices[model_for_pred]
             try:
-                from predict import predict_observation
-                pred_res = predict_observation(
-                    model_name=m_slug,
-                    voltage=v_input,
-                    current=i_input,
-                    load=p_input,
-                    frequency=f_input,
-                )
+                from predict import MODEL_FILES, predict_observation, predict_with_model
+
+                if session_models:
+                    model = session_models[name]
+                    # The sidebar returns sklearn estimators. The Studio returns GridShield wrappers.
+                    wrapper_cls = MODEL_FILES[slug][1]
+                    if not isinstance(model, wrapper_cls):
+                        wrapper = wrapper_cls()
+                        wrapper.model = model
+                        wrapper.is_fitted = True
+                        model = wrapper
+                    pred_res = predict_with_model(
+                        model, st.session_state.pipeline, v_input, i_input, p_input, f_input
+                    )
+                else:
+                    pred_res = predict_observation(slug, v_input, i_input, p_input, f_input)
 
                 if pred_res["is_attack"]:
                     st.error(f"### 🚨 VERDICT: {pred_res['prediction']}")
@@ -1098,6 +1107,8 @@ with tab5:
                 st.markdown("##### 🔬 Physical Ohm Law Consistency Check")
                 st.caption(f"Theoretical Active Power: $P = V \\times I / 1000 = {p_expected:.3f}\\text{{ kW}}$. Observed: `{p_input:.3f} kW`. Residual: `{residual:.3f} kW`.")
 
+            except FileNotFoundError:
+                st.info("Train the selected model in ML Training Studio, then run the prediction again.")
             except Exception as e:
                 st.error(f"Inference error: {str(e)}")
         else:
@@ -1214,7 +1225,11 @@ with tab7:
 
         # 1. Global Feature Importances Across Models
         st.markdown("#### 🌐 Global Feature Importance Ranking (Tree Ensembles)")
-        imp_df = compute_feature_importances(models_dict, feat_names)
+        from ml_models.base_model import BaseGridModel
+
+        explainers = {name: model.model if isinstance(model, BaseGridModel) and model.model is not None else model
+                      for name, model in models_dict.items()}
+        imp_df = compute_feature_importances(explainers, feat_names)
 
         if not imp_df.empty:
             fig_imp = px.bar(
@@ -1242,10 +1257,10 @@ with tab7:
         st.caption("Inspect any observation to decode which sensor feature pushed the AI model toward an attack classification.")
 
         test_df = results["test_df"]
-        sample_idx = st.slider("Select Observation Index from Unseen Test Partition", 0, len(test_df) - 1, 0)
+        sample_idx = st.slider("Select Observation Index from Unseen Test Partition", 0, len(test_df) - 1, 0) if len(test_df) > 1 else 0
         selected_model_name = st.selectbox(
             "Select Explainer Model",
-            [m for m in ["Random Forest", "XGBoost", "Isolation Forest"] if m in models_dict],
+            [m for m in ["Random Forest", "XGBoost", "Isolation Forest"] if m in models_dict] or list(models_dict),
             index=0,
         )
 
@@ -1253,7 +1268,7 @@ with tab7:
         if pipeline is not None:
             X_test_scaled = pipeline.transform(test_df)
             sample_vector = X_test_scaled[sample_idx]
-            model_obj = models_dict.get(selected_model_name)
+            model_obj = explainers[selected_model_name]
 
             explanation = explain_single_prediction(
                 model=model_obj,
