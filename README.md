@@ -4,10 +4,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Framework: Streamlit](https://img.shields.io/badge/Framework-Streamlit-FF4B4B.svg)](https://streamlit.io/)
 [![Deep Learning: PyTorch](https://img.shields.io/badge/Deep%20Learning-PyTorch-EE4C2C.svg)](https://pytorch.org/)
-[![Tests: Pytest Passing](https://img.shields.io/badge/Tests-23%20Passed-brightgreen.svg)]()
+[![Tests: Pytest Passing](https://img.shields.io/badge/Tests-24%20Passed-brightgreen.svg)]()
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit%20Cloud-00D4FF?style=for-the-badge&logo=streamlit)](https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/)
 
-> **🌐 Live Interactive Application:** [https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/](https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/)  
+> **🌐 Live Interactive Application & Demo:**  
+> 👉 **[https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/](https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/)**  
+> *(Experience the full 12-module industrial SCADA dashboard live in your browser without local installation)*  
+>  
 > **Final Year B.E. Engineering Project**  
 > An academic, technically defensible, and interactive machine learning platform combining electrical power domain physics, empirical smart-grid PMU datasets, multi-algorithm AI benchmarking, and real-time cyber-incident forensics.
 
@@ -85,15 +88,35 @@ Gridshield-AI-main/
 
 ## 🚀 Quick Start Guide
 
-### 1. Installation
-Clone the repository and install the dependencies:
+### 🌐 Try the Live Online Demo First
+You can immediately interact with the system without installing anything locally:
+- **Streamlit Cloud Deployment:** [https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/](https://gridshield-ai-9rfgltanyslf9tuihswpd2.streamlit.app/)
+
+---
+
+### 💻 Local Setup & Execution
+
+#### 1. Clone & Install Dependencies
+Clone the repository and install the project dependencies:
 ```bash
-git clone <repository-url>
-cd Gridshield-AI-main
+git clone https://github.com/HYVIKAS6/Gridshield-AI.git
+cd Gridshield-AI
 pip install -r requirements.txt
 ```
 
-### 2. Standalone Model Training
+#### 2. How to Run the Project (Primary Web Command)
+To launch the interactive GridShield AI Industrial SOC Command Center, run:
+```bash
+streamlit run app.py
+```
+*(Alternative command if streamlit is not in your system PATH:* `python -m streamlit run app.py`*)*
+
+After execution, the interactive web app will open automatically in your browser at:
+👉 **Local URL:** `http://localhost:8501`
+
+---
+
+### 3. Standalone Model Training (CLI)
 Train all 5 architectures on the authentic MSU research dataset or synthetic benchmark:
 ```bash
 # Train on MSU / ORNL Research Dataset
